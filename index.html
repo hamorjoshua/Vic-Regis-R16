@@ -25648,6 +25648,21 @@ function allocationScale(parts, blankUnits = 0) {
     }
   };
 }
+// A succour moves pressure, not a duty: below the card, the pressure of the house it eases, labelled.
+// The helper's own pressure is the card's; once the card is on the docket, both show the change.
+function SuccourPreview({ game, view, docketed }) {
+  const id = view.petition.target,
+    before = (view.before ?? game).people[id],
+    after = docketed && view.afterState ? view.afterState.people[id] : before;
+  if (!before || !after) return null;
+  const lvl = (v) => (v >= CONFIG.urgent ? 2 : v >= CONFIG.pressing ? 1 : 0);
+  return jsx("div", {
+    class: "pc-succour",
+    children: jsx(EffectRows, {
+      rows: [{ tone: after.pressure < before.pressure ? "up" : "even", icon: RECKONING_ESTATE_ICON[before.type], id, who: `${householdName(before)} · Pressure`, pressure: { from: before.pressure, to: after.pressure } }],
+    }),
+  });
+}
 function DutyPreview({ game, view, order, choice, current = false, whole = false, interactive = true }) {
   const petition = view.petition;
   const foundingGarrison = petition.kind === "bulwark" && petition.lawId == null;
@@ -29656,6 +29671,7 @@ function PetitionCard({
         order: hearingOrder,
         choice: hearingChoice,
       }),
+      view.petition?.kind === "succour" && view.petition.target != null && jsx(SuccourPreview, { game: game2, view, docketed: c }),
       jsx("footer", {
         class: "pc-foot",
         ref: footFit,
@@ -51635,6 +51651,11 @@ html, body { overflow-x: clip; overscroll-behavior: none !important; touch-actio
 .cal-sheet .assistant-head+.hall-lede.cal-report{margin-top:0;font-style:italic}
 /* Button text is balanced across its lines, so that no word is ever left alone on the last one. */
 button,.primary,[role=button]{text-wrap:balance}
+
+.petition-card .pc-succour{margin:2px 0 6px}
+.petition-card .pc-succour .fx-list{margin:0;padding:0}
+.petition-card .pc-succour .fx-row{padding:4px 0}
+.petition-card .pc-succour .fx-mark{display:none}
 </style></head>
   <body><div id="vr-startup" style="position:fixed;inset:0;z-index:2147483647;background:#1b2a22;color:#ead6a5;display:grid;place-content:center;text-align:center;padding:24px;font-family:Georgia,serif"><h1 style="font-size:30px">Vicarius Regis</h1><p>Preparing the court…</p><details hidden><summary>Startup recovery</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre><button onclick="location.reload()">Retry</button> <button onclick="vrRepair()">Repair app cache</button></details><small>2026.11.21-r16 · Game 20</small></div><script>vrBootWatch()</script>
     <div id="app"><div role="status" style="padding:22vh 1em;text-align:center;color:#543a26;font:22px Georgia,serif">Preparing the court…</div></div>
