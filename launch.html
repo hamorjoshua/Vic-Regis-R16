@@ -25661,11 +25661,21 @@ function SuccourPreview({ game, view, docketed }) {
     before = (view.before ?? game).people[id],
     after = docketed && view.afterState ? view.afterState.people[id] : before;
   if (!before || !after) return null;
-  const lvl = (v) => (v >= CONFIG.urgent ? 2 : v >= CONFIG.pressing ? 1 : 0);
+  const lvl = (v) => (v >= CONFIG.urgent ? 2 : v >= CONFIG.pressing ? 1 : 0),
+    name = householdName(before),
+    from = before.pressure || 0,
+    to = after.pressure || 0;
   return jsx("div", {
     class: "pc-succour",
-    children: jsx(EffectRows, {
-      rows: [{ tone: after.pressure < before.pressure ? "up" : "even", icon: RECKONING_ESTATE_ICON[before.type], id, who: `${householdName(before)} · Pressure`, pressure: { from: before.pressure, to: after.pressure } }],
+    children: jsx("span", {
+      class: "pc-succour-chip",
+      role: "img",
+      "aria-label": `${name}: pressure ${fmtNum(from)}${to !== from ? ` to ${fmtNum(to)}` : ""}`,
+      children: [
+        jsx("span", { class: "pc-succour-ico", "aria-hidden": "true", children: jsx(Icon, { icon: RECKONING_ESTATE_ICON[before.type], size: 12 }) }),
+        jsx("span", { class: "pc-succour-name", "aria-hidden": "true", children: name }),
+        jsx(ReckPips, { from, to, level: lvl(to) }),
+      ],
     }),
   });
 }
@@ -51658,10 +51668,14 @@ html, body { overflow-x: clip; overscroll-behavior: none !important; touch-actio
 /* Button text is balanced across its lines, so that no word is ever left alone on the last one. */
 button,.primary,[role=button]{text-wrap:balance}
 
-.petition-card .pc-succour{margin:10px 0 6px;padding-top:8px;border-top:1px solid var(--vellum-rule)}
-.petition-card .pc-succour .fx-list{margin:0;padding:0}
-.petition-card .pc-succour .fx-row{padding:4px 0}
-.petition-card .pc-succour .fx-mark{visibility:hidden}
+.petition-card .pc-succour{margin:10px 0 6px}
+.petition-card .pc-succour-chip{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 6px;max-width:100%;box-sizing:border-box;padding:4px 8px 4px 7px;background:var(--vellum-shade);border-radius:var(--r-sm)}
+.petition-card .pc-succour-ico{display:inline-flex;color:var(--ink-soft)}
+.petition-card .pc-succour-name{font:var(--t-sm)/1.2 var(--serif);color:var(--ink)}
+.petition-card .pc-succour .pips{gap:2px}
+.petition-card .pc-succour .pip{width:8px;height:8px;border-width:1.2px}
+.petition-card .pc-succour .pip.gap{margin-left:5px}
+.petition-card .pc-succour .reck-pips.level-2{color:var(--wax)}
 </style></head>
   <body><div id="vr-startup" style="position:fixed;inset:0;z-index:2147483647;background:#1b2a22;color:#ead6a5;display:grid;place-content:center;text-align:center;padding:24px;font-family:Georgia,serif"><h1 style="font-size:30px">Vicarius Regis</h1><p>Preparing the court…</p><details hidden><summary>Startup recovery</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre><button onclick="location.reload()">Retry</button> <button onclick="vrRepair()">Repair app cache</button></details><small>2026.11.21-r16 · Game 20</small></div><script>vrBootWatch()</script>
     <div id="app"><div role="status" style="padding:22vh 1em;text-align:center;color:#543a26;font:22px Georgia,serif">Preparing the court…</div></div>
