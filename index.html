@@ -28262,7 +28262,9 @@ function staticChips(pet) {
     case "stint":
       return [own("Stint")];
     default:
-      return ck ? [{ word: ck.word, head: ck.head, brief: ck.brief }] : [];
+      if (ck) return [{ word: ck.word, head: ck.head, brief: ck.brief }];
+      // a contrary answer with no clauses of its own is named by its own keyword
+      return REVERSE_SPEC[pet.kind] ? [own(REVERSE_SPEC[pet.kind].word)] : [];
   }
 }
 function cardKeywords(pet, game, personId) {
@@ -30219,7 +30221,7 @@ function customsText() {
         C.quarterDays
           ? `The realm’s demands grow on the four quarter days: Lady Day in the ${ordinalWords(QUARTER_DAYS[0].wk)} week of each year of your stewardship, Midsummer in the ${ordinalWords(QUARTER_DAYS[1].wk)}, Michaelmas in the ${ordinalWords(QUARTER_DAYS[2].wk)} and Christmas in the ${ordinalWords(QUARTER_DAYS[3].wk)}. Growth accrues at ${C.growthBudget} units for every ${C.growthEvery} weeks and falls due on the quarter day, as rent does, with one more unit for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work. At Lady Day ${Math.round(C.quarterFocus * 100)}% of it falls first on the soldiers’ duties, at Midsummer on the public works and at Christmas on the duties that keep the poor; the rest, and all of it at Michaelmas, is placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`
           : `The realm’s demands grow. Every ${C.growthEvery} weeks it adds ${C.growthBudget} units, one more for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work, each placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`,
-        `At the weekly close, count ${C.calamityLabour === 1 ? "one unit" : `${mmNum(C.calamityLabour ?? 2)} units`} of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw, and no draw is made before the close of the ${ordinalWords(C.calamityGraceWeeks ?? 0)} week. A region enters if the labour of its own households exceeds the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Each week without relief costs 1 standing, puts 1 pressure on a stricken household and raises local superstition again. A week of relief is one in which the standing service is fully supplied at the weekly close, or one for which the court hires temporary relief at the stated price: 3 standing, or 2 where the region has a work that shelters against it. The calamity ends after two weeks of relief, or one where such a work stands; a standing service stays on the roll afterwards.`,
+        "At the weekly close, count one unit of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw. A region enters if its own households outnumber the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Until the standing service is supplied, each neglected week costs 1 standing and raises local superstition again. Hiring temporary relief buys a week at the stated price.",
         `Local requests. Each estate also has requests of its own: commoners a mill, common grazing or a parish feast; merchants a market charter, a toll road or a guild hall; soldiers drill grounds or veterans’ pensions; clerics a pilgrims’ hospice or a saint’s feast day; officials a survey or a public registry; nobles a hunting preserve or a family chapel. Each is a small duty of ${C.amenityRequirement} units paid by other estates, and while carried it relieves the asking estate’s households in the region ${rate(C.amenityBenefit)}. A household at ease asks for these; a pressed one rarely does, and none asks while its estate in the region is pressing on average.`,
       ],
     },
@@ -35286,10 +35288,6 @@ function drawCalamityType(game, region) {
   const choices = pool.filter(spec => last(spec) === oldest);
   return choices[Math.floor(hallHash(game, 1871) * choices.length)];
 }
-// Each household can give this many units before its load begins to press on it (see loadPressure);
-// labour beyond what the duties ask is the spare labour a calamity draws upon.
-// No calamity is drawn in the first weeks of a stewardship, while the court is still finding its feet.
-Object.assign(CONFIG, { calamityLabour: 2, calamityGraceWeeks: 6 });
 // An ordinary duty belongs to its region before its roll comes before the court.
 function calamityLaborBudget(game) {
   const balance = Object.fromEntries(REGIONS.map(region => [region, { houses: 0, required: 0 }]));
@@ -35314,15 +35312,14 @@ function calamityLaborBudget(game) {
   return { balance, totalRequired };
 }
 function recordCalamitySurplus(game) {
-  if (game.lesson || game.gameOver || game.calamity || game.calamityDue || game.week < (CONFIG.calamityGraceWeeks ?? 0)) return;
+  if (game.lesson || game.gameOver || game.calamity || game.calamityDue) return;
   const { balance, totalRequired } = calamityLaborBudget(game);
-  const per = CONFIG.calamityLabour ?? 2;
-  if (game.people.length * per - totalRequired <= 1e-9) return;
+  if (game.people.length - totalRequired <= 1e-9) return;
   let chosen = null;
   for (const [index, region] of REGIONS.entries()) {
     const { houses, required } = balance[region];
-    if (!houses || houses * per - required <= 1e-9) continue;
-    const spare = (houses * per - required) / (houses * per);
+    if (!houses || houses - required <= 1e-9) continue;
+    const spare = (houses - required) / houses;
     const faith = regionFaith(game, region);
     const chance = faith.devout ? 0.25 : faith.lax ? 0.75 : 0.5;
     if (hallHash(game, 1901 + index) >= chance) continue;
@@ -35397,20 +35394,19 @@ function closeCalamity(game, report) {
   const c = game.calamity;
   if (!c) return;
   const spec = calamitySpec(c), law = calamityLaw(game);
-  const supplied = !!law && allocateDuty(game, law).shortfall <= 1e-9,
-    hired = c.emergencyWeek === game.week;
-  // A week of relief counts toward the end whether the standing service supplied it or the court
-  // hired it; hired relief is dearer in standing but leaves no duty on the roll.
-  if (supplied || hired) {
+  if (law && allocateDuty(game, law).shortfall <= 1e-9) {
     c.progress++;
-    const ended = c.progress >= calamityTerms(game).goal,
-      who = supplied ? spec.duty : "Hired relief";
-    logEvent(report, who + (ended ? " has brought the calamity to an end." + (law ? " Its roll remains in force." : "") : " has carried a full week of relief."), "regionalRelief");
+    const ended = c.progress >= calamityTerms(game).goal;
+    logEvent(report, spec.duty + (ended ? " has brought the calamity to an end. Its roll remains in force." : " has served its first full week of relief."), "regionalRelief");
     if (ended) finishCalamity(game);
     return;
   }
   const local = game.people.filter(p => p.region === c.region), preferred = local.filter(p => p.type === spec.victim);
   for (const p of local) addSuperstition(p, 1);
+  if (c.emergencyWeek === game.week) {
+    logEvent(report, spec.duty + ": hired relief carries this week. The standing service is still wanting; local households gain 1 superstition.", "regionalRelief");
+    return;
+  }
   spendStanding(game, 1);
   const pool = preferred.length ? preferred : local;
   if (!pool.length) return;
@@ -35474,8 +35470,8 @@ function CalamityDecision({game,onRule}) {
         choice===1 && jsx(EffectRows,{rows:[calamityStandingRow(game,ruled)]}),
         choice===2 && note(spec.harm),
         heading("At the weekly close · current roll"),jsx(EffectRows,{rows}),
-        note(forecast.calamity ? (choice===1?"Hired relief carries this week. ":"")+"The messenger returns next week." : law ? "Relief complete. The duty stays on the roll." : "Relief complete. No duty is left on the roll."),
-        law && jsx("details",{children:[jsx("summary",{children:"If the roll changes"}),note((choice===1?"Hired relief counts as a full week whatever the roll does. ":"A full week counts toward relief. A shortage raises local superstition, costs one standing and puts pressure on one household. ")+"The duty continues after relief.")]})
+        note(forecast.calamity ? (choice===1?"Hired relief lasts this week. ":"")+"The messenger returns next week." : "Relief complete. The duty stays on the roll."),
+        law && jsx("details",{children:[jsx("summary",{children:"If the roll changes"}),note("A full week counts toward relief. A shortage raises local superstition. "+(choice===1?"Hired relief covers the other losses this week.":"A shortage also costs one standing and puts pressure on one household.")+" The duty continues after relief.")]})
       ]}),
       jsx("button",{type:"button",class:"primary cal-confirm",onClick:()=>onRule(choice),children:"Issue this order"})
     ]})})});
