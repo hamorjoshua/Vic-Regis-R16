@@ -30673,7 +30673,7 @@ function customsText() {
         C.quarterDays
           ? `The realm’s demands grow on the four quarter days: Lady Day in the ${ordinalWords(QUARTER_DAYS[0].wk)} week of each year of your stewardship, Midsummer in the ${ordinalWords(QUARTER_DAYS[1].wk)}, Michaelmas in the ${ordinalWords(QUARTER_DAYS[2].wk)} and Christmas in the ${ordinalWords(QUARTER_DAYS[3].wk)}. Growth accrues at ${C.growthBudget} units for every ${C.growthEvery} weeks and falls due on the quarter day, as rent does, with one more unit for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work. At Lady Day ${Math.round(C.quarterFocus * 100)}% of it falls first on the soldiers’ duties, at Midsummer on the public works and at Christmas on the duties that keep the poor; the rest, and all of it at Michaelmas, is placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`
           : `The realm’s demands grow. Every ${C.growthEvery} weeks it adds ${C.growthBudget} units, one more for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work, each placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`,
-        "At the weekly close, count one unit of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw. A region enters if its own households outnumber the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Until the standing service is supplied, each neglected week costs 1 standing and raises local superstition again. Hiring temporary relief buys a week at the stated price.",
+        "At the weekly close, count one unit of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw. A region enters if its own households outnumber the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Each week the standing service is not fully supplied at the weekly close raises local superstition again; unless the court hired relief for that week, it also costs 1 standing and puts 1 pressure on a stricken household. Hired relief costs 3 standing, or 2 where the region has a work that shelters against the calamity, and does not count toward its end. The calamity ends after two fully supplied weeks, or one where such a work stands; the service stays on the roll afterwards.",
         `Local requests. Each estate also has requests of its own: commoners a mill, common grazing or a parish feast; merchants a market charter, a toll road or a guild hall; soldiers drill grounds or veterans’ pensions; clerics a pilgrims’ hospice or a saint’s feast day; officials a survey or a public registry; nobles a hunting preserve or a family chapel. Each is a small duty of ${C.amenityRequirement} units paid by other estates, and while carried it relieves the asking estate’s households in the region ${rate(C.amenityBenefit)}. A household at ease asks for these; a pressed one rarely does, and none asks while its estate in the region is pressing on average.`,
       ],
     },
@@ -35849,14 +35849,14 @@ function closeCalamity(game, report) {
   if (law && allocateDuty(game, law).shortfall <= 1e-9) {
     c.progress++;
     const ended = c.progress >= calamityTerms(game).goal;
-    logEvent(report, spec.duty + (ended ? " has brought the calamity to an end. Its roll remains in force." : " has served its first full week of relief."), "regionalRelief");
+    logEvent(report, ended ? `The calamity in the ${c.region} is over. The ${dutyNameInSentence(spec.duty)} stays on the roll.` : `A full week of relief in the ${c.region}, under the ${dutyNameInSentence(spec.duty)}. One more will see the calamity through.`, "regionalRelief");
     if (ended) finishCalamity(game);
     return;
   }
   const local = game.people.filter(p => p.region === c.region), preferred = local.filter(p => p.type === spec.victim);
   for (const p of local) addSuperstition(p, 1);
   if (c.emergencyWeek === game.week) {
-    logEvent(report, spec.duty + ": hired relief carries this week. The standing service is still wanting; local households gain 1 superstition.", "regionalRelief");
+    logEvent(report, `${spec.title}: hired relief carries this week, but no standing service supplies it. Local households gain 1 superstition.`, "regionalRelief");
     return;
   }
   spendStanding(game, 1);
@@ -35893,49 +35893,92 @@ function CalamityDecision({game,onRule}) {
   const progress = forecast.calamity?.progress ?? goal;
   const local = ruled.people.filter(p => p.region === c.region);
   const later = new Map(forecast.people.map(p => [p.id,p]));
-  const rows = [{who:"Fully supplied weeks",bar:{kind:"work",from:c.progress,to:progress,total:goal,label:progress+" / "+goal}}];
-  if (ruled.standing !== forecast.standing || ruled.reserve !== forecast.reserve) rows.push(calamityStandingRow(ruled,forecast));
+  // what the weekly close would bring, each line marked as a cost and named by its icon
+  const rows = [];
+  if (ruled.standing !== forecast.standing || ruled.reserve !== forecast.reserve) rows.push({...calamityStandingRow(ruled,forecast), tone:"down"});
   for (const p of local) {
     const next = later.get(p.id);
-    if (next.pressure !== p.pressure) rows.push({who:householdName(p)+" · Pressure",icon:RECKONING_ESTATE_ICON[p.type],pressure:{from:p.pressure,to:next.pressure}});
+    if (next.pressure !== p.pressure) rows.push({who:householdName(p)+" · Pressure", tone:"down", icon:RECKONING_ESTATE_ICON[p.type], pressure:{from:p.pressure,to:next.pressure}});
   }
-  rows.push(...calamityFaithRows(local.map(p => ({name:householdName(p),from:superstitionOf(p),to:superstitionOf(later.get(p.id))}))));
-  const note = text => jsx("p",{class:"cal-note",children:text});
-  const heading = text => jsx("h3",{children:text});
-  const arrival = c.since === game.week && c.arrivalFaith;
+  rows.push(...calamityFaithRows(local.map(p => ({name:householdName(p),from:superstitionOf(p),to:superstitionOf(later.get(p.id))}))).map(r => ({...r, tone:"down", icon:"flame"})));
+  const note = (text, cls) => jsx("p",{class:"cal-note" + (cls ? " " + cls : ""),children:text});
+  const arrival = c.since === game.week ? (c.arrivalFaith || []) : null;
+  const stirred = arrival ? arrival.filter(x => x.to !== x.from).length : 0;
+  const pips = (done, next) => jsx("span",{class:"cal-pips",role:"img","aria-label":`${done} of ${goal} weeks of relief`,
+    children:Array.from({length:goal},(_,i)=>jsx("span",{class:"cal-pip" + (i < done ? " done" : i < next ? " next" : "")}))});
+  const kinds = ["Standing duty","Hire relief","Leave it to the households"];
+  // the duty as it would be founded: an estate that governs is loosed from it, and an estate with no
+  // household in the region has no one to bear it
+  const charter = existing ? null : calamityLaw(ruleCalamity(game, 0)),
+    bearers = charter ? [...new Set(payersOf(game, charter).map(p => p.type))] : [],
+    missing = spec.types.filter(t => !bearers.includes(t)).map(t =>
+      game.government?.form === t ? `the ${ESTATE_PLURAL[t]} are loosed from it while they govern` : `no ${ESTATE_PLURAL[t]} live in the ${c.region}`);
+  const sub = i => i === 0
+    ? (existing ? "Keep the standing service on the roll"
+      : bearers.length ? `A new duty of 2 units a week, borne by ${listWithAnd(bearers.map(t => theEstateIn(c.region, t)))}${missing.length ? ` (${missing.join("; ")})` : ""}`
+      : `A new duty of 2 units a week, but no one would bear it: ${missing.join("; ")}`)
+    : i === 1 ? `${terms.cost} standing · spares the court and the households this week’s losses; superstition still rises, and it does not count toward relief`
+    : "Each week without relief costs 1 standing, puts 1 pressure on a stricken household, and raises local superstition";
+  const outcome = !forecast.calamity ? "The calamity ends" : progress > c.progress ? "A week of relief" : "No relief this week";
   return jsx("div",{class:"overlay session cal-screen",role:"dialog","aria-modal":"true","aria-label":v.title,
     children:jsx("div",{class:"overlay-inner",children:jsx("article",{class:"cal-sheet",children:[
-      jsx("small",{children:c.region+" · Week "+game.week}),jsx("h2",{children:v.title}),
+      jsx("small",{children:c.region+" · "+(c.since === game.week ? "Week "+game.week : `Week ${game.week} · since week ${c.since}`)}),
+      jsx("h2",{children:v.title}),
       jsx("p",{class:"cal-report",children:spec.appeal}),
-      terms.protectedByWork && jsx("div",{class:"cal-note",children:[jsx(WorkIcon,{work:c.region+"|"+spec.work})," ",spec.shelter]}),
-      c.since === game.week && jsx("details",{open:true,children:[
-        jsx("summary",{children:"Word reaches the households · Superstition"}),
-        arrival ? (calamityFaithRows(arrival).length ? jsx(EffectRows,{rows:calamityFaithRows(arrival)}) : note("All local households were already at their highest level.")) : note("The news raised local superstition by one step, up to its limit.")
+      terms.protectedByWork && jsx("div",{class:"cal-note cal-shelter",children:[jsx(WorkIcon,{work:c.region+"|"+spec.work})," ",spec.shelter]}),
+      jsx("div",{class:"cal-status",children:[
+        jsx("span",{class:"cal-status-label",children:"Weeks of relief"}),
+        pips(c.progress, c.progress),
+        jsx("span",{class:"cal-status-num",children:`${c.progress} of ${goal} · `+(goal === 1 ? "one full week ends it" : "two full weeks end it")}),
       ]}),
-      heading("Your order"),
-      jsx("div",{class:"cal-options",children:v.options.map((o,i)=>jsx("button",{type:"button","aria-pressed":choice===i,disabled:!!o.disabled,onClick:()=>select(i),
-        children:[["Standing duty","Hire relief","Leave to households"][i],i===1 && jsx("small",{children:terms.cost+" standing"+(o.disabled?" · Unavailable":"")})]},i))}),
+      arrival && jsx("details",{class:"cal-word",children:[
+        jsx("summary",{children: stirred ? `Word spreads: ${stirred} ${stirred === 1 ? "household grows" : "households grow"} more superstitious` : "Word spreads, but every household here was already as superstitious as it could be"}),
+        stirred > 0 && jsx(EffectRows,{rows:calamityFaithRows(arrival).map(r => ({...r, tone:"down", icon:"flame"}))}),
+      ]}),
+      jsx("h3",{children:"Your order"}),
+      jsx("div",{class:"cal-options",role:"radiogroup","aria-label":"Your order",children:v.options.map((o,i)=>jsx("button",{type:"button",role:"radio","aria-checked":choice===i,"aria-pressed":choice===i,disabled:!!o.disabled,onClick:()=>select(i),children:[
+        jsx("span",{class:"cal-opt-kind",children:kinds[i]+(i===1 && o.disabled ? " · not enough standing" : "")}),
+        jsx("span",{class:"cal-opt-label",children:o.label}),
+        jsx("span",{class:"cal-opt-sub",children:sub(i)}),
+      ]},i))}),
       jsx("section",{class:"cal-result","aria-live":"polite",children:[
-        heading(v.options[choice].label),
-        law && jsx("div",{children:[note((choice===0 && !existing?"New duty":"Standing duty")+" · "+law.title+" · "+unitsLabel(law.requirement)+"/week"),
+        law && jsx("div",{class:"cal-duty",children:[note((choice===0 && !existing?"New duty":"Standing duty")+" · "+law.title+" · "+unitsLabel(law.requirement)+"/week","cal-duty-head"),
           jsx(DutyPreview,{game:ruled,current:true,interactive:false,order:[],view:{petition:{lawId:law.id}}})]}),
-        choice===1 && jsx(EffectRows,{rows:[calamityStandingRow(game,ruled)]}),
-        choice===2 && note(spec.harm),
-        heading("At the weekly close · current roll"),jsx(EffectRows,{rows}),
-        note(forecast.calamity ? (choice===1?"Hired relief lasts this week. ":"")+"The messenger returns next week." : "Relief complete. The duty stays on the roll."),
-        law && jsx("details",{children:[jsx("summary",{children:"If the roll changes"}),note("A full week counts toward relief. A shortage raises local superstition. "+(choice===1?"Hired relief covers the other losses this week.":"A shortage also costs one standing and puts pressure on one household.")+" The duty continues after relief.")]})
+        choice===1 && jsx(EffectRows,{rows:[{...calamityStandingRow(game,ruled), tone:"down"}]}),
+        choice===2 && note(spec.harm, "cal-harm"),
+        jsx("h3",{children:"At this week’s close"}),
+        jsx("div",{class:"cal-status cal-status-small",children:[pips(c.progress, progress),jsx("span",{class:"cal-status-num",children:outcome})]}),
+        rows.length > 0 && jsx(EffectRows,{rows}),
+        note(forecast.calamity ? (choice===1 ? "Hired relief carries this week. " : "")+"The messenger returns next week." : "Relief complete. The duty stays on the roll."),
+        law && choice !== 1 && jsx("details",{children:[jsx("summary",{children:"If the roll changes before the close"}),note("A fully supplied week counts toward relief. A short one raises local superstition, costs 1 standing and puts 1 pressure on one household. The duty continues after the calamity ends.")]}),
       ]}),
-      jsx("button",{type:"button",class:"primary cal-confirm",onClick:()=>onRule(choice),children:"Issue this order"})
+      jsx("button",{type:"button",class:"primary cal-confirm",onClick:()=>onRule(choice),children:"Send the messenger back"}),
     ]})})});
 }
 function CalamityOverlay({game,onRule}) {
   const [read,setRead] = useState(false);
   if (read) return jsx(CalamityDecision,{game,onRule});
-  const c = game.calamity;
-  return jsx(AssistantScreen,{say:c.since===game.week
-    ? "Vicar, an express has come from the "+c.region+". The messenger is waiting to ride back with your orders."
-    : "Vicar, word again from the "+c.region+". They need your orders before the day’s hearings.",
-    button:"Read the dispatch",onNext:()=>setRead(true)});
+  return jsx(AssistantScreen,{say:calamityAssistantSay(game),button:"Read the dispatch",onNext:()=>setRead(true)});
+}
+// What the assistant says before the dispatch is read: on its arrival, what has happened; on the
+// messenger's return, how the relief has gone so far and what remains.
+function calamityAssistantSay(game) {
+  const c = game.calamity, spec = calamitySpec(c), law = calamityLaw(game), goal = calamityTerms(game).goal;
+  const what = spec.title.charAt(0).toLowerCase() + spec.title.slice(1);
+  if (c.since === game.week)
+    return `Vicar, an express has come from the ${c.region}: ${what}. The messenger is waiting to ride back with your orders.`;
+  const left = goal - c.progress,
+    more = left === 1 ? "one more full week will see it through" : `${mmNum(left)} more full weeks will see it through`;
+  const so = c.progress > 0
+    ? `${capWord(mmNum(c.progress))} full week${c.progress === 1 ? "" : "s"} of relief ${c.progress === 1 ? "is" : "are"} done; ${more}.`
+    : c.emergencyWeek === game.week - 1
+      ? `The relief you hired carried last week, but no standing service is in place, and ${left === 1 ? "a full week of relief is still wanting" : `${mmNum(left)} full weeks of relief are still wanting`}.`
+      : law
+        ? `The ${dutyNameInSentence(law.title)} fell short last week, so the ${c.region} is still without relief.`
+        : c.ruledWeek === game.week - 1
+          ? `Nothing was done for them last week, and the losses go on.`
+          : `Nothing has been done for them yet, and the losses go on.`;
+  return `Vicar, the messenger is back from the ${c.region}. ${so} He needs your orders before the day’s hearings.`;
 }
 const MATTER_ORDER = ["hall", "works", "office", "faith"];
 function matterWaits(game, k) {
@@ -51533,6 +51576,26 @@ html, body, body * { overscroll-behavior-y: none !important; }
 <style>
 .cal-screen .cal-sheet{width:min(100%,34rem);box-sizing:border-box;min-width:0;margin:auto;background:#efe4c8;color:#30271d;border:1px solid #b99d62;border-radius:.65rem;padding:clamp(.85rem,4vw,1.5rem);text-align:left;line-height:1.35}
 .cal-sheet h2{margin:.2rem 0 .6rem;font-size:1.6rem}.cal-sheet h3{margin:.85rem 0 .4rem;font-size:1.04rem}.cal-sheet p{margin:.45rem 0}.cal-sheet .cal-report{font-style:italic}.cal-sheet small,.cal-sheet summary,.cal-sheet .cal-note{font-size:.85rem}.cal-sheet summary{cursor:pointer;padding:.4rem 0}.cal-sheet .cal-options{display:flex;gap:.35rem}.cal-options button{flex:1;min-width:0;min-height:44px;padding:.35rem .18rem;border:1px solid #9c895f;border-radius:.4rem;background:#e3d6b6;color:#30271d;font:inherit;font-size:.85rem}.cal-options button[aria-pressed=true]{background:#264136;color:#fff5d8}.cal-options button:disabled{opacity:.65}.cal-options small{display:block;font-size:.7rem}.cal-result{margin:.65rem 0;padding:.15rem .65rem .6rem;border-block:1px solid #bbaa81}.cal-sheet .fx-row{min-width:0}.cal-sheet .fx-text{min-width:0;overflow-wrap:anywhere}.cal-sheet .fx-meters,.cal-sheet .fx-faith{flex-wrap:wrap}.cal-sheet .cal-confirm{width:100%;min-height:44px}.cal-sheet .duty-allocation{max-width:100%;box-sizing:border-box}
+
+.cal-sheet .cal-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:.6rem 0 .2rem;padding:.5rem 0;border-top:1px solid #c9b07a;font-size:.88rem}
+.cal-sheet .cal-status-label{font-weight:600}
+.cal-sheet .cal-status-num{color:#5a4a33}
+.cal-sheet .cal-status-small{border-top:0;margin:.1rem 0;padding:.2rem 0}
+.cal-sheet .cal-pips{display:inline-flex;gap:5px}
+.cal-sheet .cal-pip{width:22px;height:10px;border-radius:2px;border:1px solid #8c7546;background:#f3ebd4}
+.cal-sheet .cal-pip.done{background:#3c6b4f;border-color:#2b4f3a}
+.cal-sheet .cal-pip.next{background:repeating-linear-gradient(45deg,#3c6b4f 0 3px,#cfe0c9 3px 6px);border-color:#2b4f3a}
+.cal-sheet .cal-word{border-top:1px solid #c9b07a;font-size:.88rem}
+.cal-sheet .cal-word summary{color:#5a4a33}
+.cal-sheet .cal-shelter{display:flex;gap:6px;align-items:flex-start;padding:.45rem .6rem;background:#e3d3a8;border-radius:.35rem}
+.cal-sheet .cal-options{flex-direction:column;gap:.45rem}
+.cal-sheet .cal-options button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:.55rem .75rem;border-left-width:4px;font-size:.95rem}
+.cal-sheet .cal-options button[aria-pressed=true]{background:#264136;color:#fff5d8;border-color:#16281f}
+.cal-sheet .cal-opt-kind{font-size:.68rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;opacity:.8}
+.cal-sheet .cal-opt-label{font-weight:600}
+.cal-sheet .cal-opt-sub{font-size:.8rem;opacity:.85}
+.cal-sheet .cal-duty-head{font-weight:600}
+.cal-sheet .cal-harm{font-style:italic}
 </style></head>
   <body><div id="vr-startup" style="position:fixed;inset:0;z-index:2147483647;background:#1b2a22;color:#ead6a5;display:grid;place-content:center;text-align:center;padding:24px;font-family:Georgia,serif"><h1 style="font-size:30px">Vicarius Regis</h1><p>Preparing the court…</p><details hidden><summary>Startup recovery</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre><button onclick="location.reload()">Retry</button> <button onclick="vrRepair()">Repair app cache</button></details><small>2026.11.21-r16 · Game 20</small></div><script>vrBootWatch()</script>
     <div id="app"><div role="status" style="padding:22vh 1em;text-align:center;color:#543a26;font:22px Georgia,serif">Preparing the court…</div></div>
