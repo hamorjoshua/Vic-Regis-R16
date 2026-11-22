@@ -5907,7 +5907,7 @@ function openingHand(game) {
     const pet = [
       ...(game.audience.includes(person.id) ? [currentPetition(game, person.id)] : []),
       ...choosePetition(game, person.id),
-    ].find((p) => onRoll(person.id, p) && !shareMoot(game, p) && audiencePetitionValid(game, person.id, p));
+    ].find((p) => onRoll(person.id, p) && !shareMoot(game, p, person.id) && audiencePetitionValid(game, person.id, p));
     if (!pet) continue;
     // a stray petition of faith gives way before any other seat
     const out = stray()[0];
@@ -7662,6 +7662,9 @@ function hearPetition(game, personId) {
     return {
       status: "empty",
     };
+  // While a ruling is carried out, the tests that keep moot cards from being offered stand aside:
+  // a card offered at the start of the session is heard as offered.
+  AT_HEARING++;
   try {
     if (
       (applyRuling(trial, personId, pet, r),
@@ -7719,6 +7722,8 @@ function hearPetition(game, personId) {
       status: "blocked",
       reason: String(o),
     };
+  } finally {
+    AT_HEARING--;
   }
   ALLOC_CACHE.delete(trial);
   CONFIG.govAware && govEnforce(trial);
@@ -10531,7 +10536,7 @@ function petitionOptionsStandard(game, personId) {
 
 function flipAlternativeBase(game, personId) {
   const alt = flipAlternativeBase0(game, personId);
-  return shareMoot(game, alt) ? null : alt;
+  return shareMoot(game, alt, personId) ? null : alt;
 }
 function flipAlternativeBase0(game, personId) {
   let front = null;
@@ -10542,7 +10547,7 @@ function flipAlternativeBase0(game, personId) {
   }
   for (const f of [flipAlternativeOrdinary, shortfallReverse, respiteReverse, lastReverse, opposeLast, foundLast, coreLast]) {
     const pet = f(game, personId);
-    if (pet && !sameRemedy(pet, front)) return pet;
+    if (pet && !sameRemedy(pet, front) && !shareMoot(game, pet, personId)) return pet;
   }
   return null;
 }
@@ -10633,7 +10638,7 @@ function shortfallReverse(game, personId) {
         }
       : { ...made, title: "Widen the duty", sfFlip: { from: null, aid: true, short, left: pick.short, frontLeft: null } };
   const pet = finalizePetition(game, personId, alt);
-  if (pet.kind !== "extend" || pet.targetType !== pick.estate || shareMoot(game, pet)) return null;
+  if (pet.kind !== "extend" || pet.targetType !== pick.estate || shareMoot(game, pet, personId)) return null;
   if (!audiencePetitionValid(game, personId, pet)) return null;
   return pet;
 }
@@ -10676,7 +10681,7 @@ function respiteReverse(game, personId) {
   if (!law || !law.active) return null;
   const tryPet = (alt) => {
     const pet = finalizePetition(game, personId, alt);
-    return pet && pet.kind === alt.kind && !shareMoot(game, pet) && audiencePetitionValid(game, personId, pet) ? pet : null;
+    return pet && pet.kind === alt.kind && !shareMoot(game, pet, personId) && audiencePetitionValid(game, personId, pet) ? pet : null;
   };
   const neg = negotiatePetition(game, person, law);
   if (neg) {
@@ -12476,10 +12481,10 @@ function currentPetition__u(game, personId) {
   let base = currentPetitionBase(game, personId);
   if (base.kind === "bulwark" && !PetitionPriority.valid(game, personId, base))
     base = choosePetition(game, personId).find(p => p.kind !== "bulwark" || PetitionPriority.valid(game, personId, p)) ?? retargetPetition(game, personId);
-  if (shareMoot(game, base)) base = choosePetition(game, personId).find((p) => !shareMoot(game, p)) ?? retargetPetition(game, personId);
+  if (shareMoot(game, base, personId)) base = choosePetition(game, personId).find((p) => !shareMoot(game, p, personId)) ?? retargetPetition(game, personId);
   if (noRoomToShift(game, personId, base))
     base =
-      choosePetition(game, personId).find((p) => !shareMoot(game, p) && !noRoomToShift(game, personId, p)) ??
+      choosePetition(game, personId).find((p) => !shareMoot(game, p, personId) && !noRoomToShift(game, personId, p)) ??
       retargetPetition(game, personId);
   base = handoverIfFull(game, personId, base);
   return flipFinish(game, personId, base);
@@ -14533,13 +14538,71 @@ function handoverIfFull(game, personId, pet) {
   };
 }
 
-function shareMoot(game, pet) {
+let AT_HEARING = 0;
+function shareMoot(game, pet, personId) {
   if (!pet || pet.lawId == null || !SHARE_MOVING_KINDS.has(pet.kind)) return false;
   const law = lawById(game, pet.lawId);
   if (!law || !law.active || !(law.requirement > 0)) return false;
   const alloc = allocateDuty(game, law);
   // nothing is left for any household to give: support has taken the whole of it
-  return (alloc.relieved || 0) > 0 && !(alloc.shortfall > 1e-9) && alloc.shares.every((x) => !(x > 1e-9));
+  if ((alloc.relieved || 0) > 0 && !(alloc.shortfall > 1e-9) && alloc.shares.every((x) => !(x > 1e-9))) return true;
+  return AT_HEARING ? false : dutyChangeless(game, pet, personId, law, alloc);
+}
+// Would granting this petition leave the duty dealt exactly as it is? Shares are dealt in whole units
+// and no household carries more than its cap, so widening a roll where everyone carries a single unit,
+// or lightening a share pinned at the cap of a short duty, moves nothing. The duty is dealt again with
+// the petition's change, as its ruling would make it, and compared share by share and in its shortfall.
+function dutyChangeless(game, pet, personId, law, alloc) {
+  const next = dutyNext(game, pet, personId, law);
+  if (next === true) return true;
+  if (!next) return false;
+  const after = allocateDutyUncached(game, next);
+  if (Math.abs((after.shortfall || 0) - (alloc.shortfall || 0)) > 1e-9) return false;
+  for (let k = 0; k < game.people.length; k++)
+    if (Math.abs((after.nominalShares[k] || 0) - (alloc.nominalShares[k] || 0)) > 1e-9) return false;
+  return true;
+}
+// A widening on a duty that is short: those already on the roll are held at their cap, so the
+// newcomers only make up what the roll lacks, and nobody already there carries any less.
+function widenFillsOnly(game, pet, personId) {
+  if (!pet || !(pet.kind === "extend" || pet.kind === "aid") || pet.lawId == null) return false;
+  const law = lawById(game, pet.lawId);
+  if (!law || !law.active) return false;
+  const next = dutyNext(game, pet, personId, law);
+  if (!next || next === true) return false;
+  const now = allocateDuty(game, law),
+    after = allocateDutyUncached(game, next);
+  if (!(after.shortfall < now.shortfall - 1e-9)) return false;
+  for (let k = 0; k < game.people.length; k++) {
+    if (pet.handover && k === personId) continue;
+    const was = now.nominalShares[k] || 0;
+    if (was > 1e-9 && (after.nominalShares[k] || 0) < was - 1e-9) return false;
+  }
+  return true;
+}
+const WIDEN_FILL_NOTE = "The roll is short: the newcomers make up what it lacks, and those already on it carry as much as before.";
+const WIDEN_FILL_BRIEF = "An estate or a house is put on a duty’s roll that is short. Those already on it are carrying all they can, so the newcomers make up what the roll lacks and nobody already there carries less. The requirement does not change.";
+// The duty as the petition's ruling would leave it, or true where the ruling could add no one.
+function dutyNext(game, pet, personId, law) {
+  const id = personId ?? null;
+  let next = null;
+  if ((pet.kind === "extend" || (pet.kind === "aid" && !pet.order)) && pet.targetType && !pet.handover) {
+    next = { ...law, types: law.types.includes(pet.targetType) ? law.types : [...law.types, pet.targetType] };
+    if (id != null && (pet.kind === "aid" || pet.writ)) next.personal = { ...law.personal, [id]: 1 };
+  } else if (pet.kind === "aid" && pet.order && id != null) {
+    const me = game.people[id],
+      w = dutyWeight(me, law) || 2,
+      join = game.people.filter((p) => p.type === me.type && p.region !== me.region && !law.order?.ids.includes(p.id) && !law.exclude.includes(p.id));
+    if (!join.length) return true;
+    next = { ...law, order: { type: me.type, ids: [...(law.order?.ids ?? []), ...join.map((p) => p.id)] }, personal: { ...law.personal, ...Object.fromEntries(join.map((p) => [p.id, w / 2])) } };
+  } else if (pet.kind === "negotiate" && id != null && !pet.joint && !pet.backers?.length) {
+    next = { ...law, personal: { ...law.personal, [id]: pet.targetWeight ?? 1 } };
+  } else if (pet.kind === "equalize") {
+    const restored = { ...law.personal };
+    for (const p of game.people) if (isLiable(p, law)) restored[p.id] = 2;
+    next = { ...law, personal: restored };
+  }
+  return next;
 }
 const PetitionPriority = {
   family(pet) {
@@ -14580,7 +14643,7 @@ const PetitionPriority = {
     }
     if (pet.kind === "repeal") return !!game.policies?.[pet.policy];
     if (pet.lawId != null && !lawById(game, pet.lawId)?.active) return false;
-    if (shareMoot(game, pet)) return false;
+    if (shareMoot(game, pet, personId)) return false;
     return true;
   },
   candidates(game, personId) {
@@ -15363,7 +15426,9 @@ PetitionPriority.candidates = function (game, personId) {
 
 const epOldValid = PetitionPriority.valid.bind(PetitionPriority);
 PetitionPriority.valid = (game, personId, pet) =>
-  pet?.kind === "staypolicy"
+  pet && CLAUSE_KINDS.has(pet.kind) && !REVERSE_SPEC[pet.kind] && clausePrimaryDead(game, personId, pet)
+    ? false
+    : pet?.kind === "staypolicy"
     ? pet.flipOf === "policy" && opposeOk(game, personId, pet)
     : isCoreReverse(pet)
     ? opposeOk(game, personId, pet)
@@ -23360,6 +23425,19 @@ function amenityLead(game, personId, pet) {
   return `Since ${stewardWeek(law.week, "your")}, when the court granted it${founder && founder.id !== p.id ? ` at the asking of ${householdName(founder)}` : ""}, we have answered for ${a.spoken}.`;
 }
 function petitionWords(game, personId2, pet) {
+  const words = petitionWordsPlain(game, personId2, pet);
+  if (!words || typeof words !== "object" || !pet || !(pet.kind === "extend" || pet.kind === "aid")) return words;
+  let fill = false;
+  try {
+    fill = withAllocCache(game, () => widenFillsOnly(game, pet, personId2));
+  } catch {
+    fill = false;
+  }
+  if (!fill) return words;
+  const add = (t) => (typeof t === "string" && t && !t.includes(WIDEN_FILL_NOTE) ? `${t.trim().replace(/([^.!?])$/, "$1.")} ${WIDEN_FILL_NOTE}` : t);
+  return { ...words, decree: add(words.decree), ruling: add(words.ruling) };
+}
+function petitionWordsPlain(game, personId2, pet) {
   const words = withAllocCache(game, () => petitionWords__u(game, personId2, pet));
   if (!words || typeof words.petition !== "string") return words;
   if (isCourtFace(pet)) {
@@ -27303,6 +27381,7 @@ for (const [k, s] of Object.entries(REVERSE_SPEC)) ESTATE_KEYWORDS[k] = [s.word,
 const isOpposeReverse = (pet) => !!(pet && REVERSE_SPEC[pet.kind] && pet.flipOf && (OPPOSE_FLIP[pet.flipOf] === pet.kind || CORE_FLIP[pet.flipOf] === pet.kind));
 function opposeOk(game, personId, pet) {
   try {
+    if (CLAUSE_SPEC[pet.kind] && clausePrimaryDead(game, personId, pet)) return false;
     return !!REVERSE_SPEC[pet.kind].ok(opposeCtx(game, personId, pet));
   } catch {
     return false;
@@ -28285,8 +28364,60 @@ function narrateClauses(game, personId, pet) {
 }
 
 function clausesFor(game, personId, pet) {
+  const raw = clausesForRaw(game, personId, pet);
+  return raw ? raw.map((c) => pruneClause(game, c)).filter(Boolean) : null;
+}
+function clausesForRaw(game, personId, pet) {
   const f = CLAUSE_SPEC[pet.kind];
-  return f ? f(verbCtx(game, personId, pet)) : null;
+  return f ? f(verbCtx(game, personId, pet)).filter(Boolean) : null;
+}
+// A clause names only those it can still move: a house already at the top of regard (with no
+// pressure for the excess to ease), at the bottom, with no pressure to ease or at the most, already as
+// devout or superstitious as can be (or as little), or an estate with no grievance to lose, is left
+// out, so that the card states only what will happen. A clause left with no one to move is dropped.
+const CLAUSE_CAN_MOVE = {
+  favour: (game, p) => (p.regard ?? 0) < 2 || (!!CONFIG.regardSpill && (p.pressure || 0) > 0),
+  slight: (game, p) => (p.regard ?? 0) > -2,
+  ease: (game, p) => (p.pressure || 0) > 0,
+  press: (game, p) => (p.pressure || 0) < CONFIG.max,
+  credit: (game, p) => superstitionOf(p) < FAITH_MAX,
+  discredit: (game, p) => superstitionOf(p) > 0,
+  hallow: (game, p) => devotionOf(p) < FAITH_MAX,
+  chasten: (game, p) => devotionOf(p) > 0,
+  absolve: (game, k) => (game.grievance?.[k] || 0) > 1e-9,
+};
+function pruneClause(game, c) {
+  if (!c) return null;
+  const can = CLAUSE_CAN_MOVE[c.v];
+  let out = c;
+  if (can && Array.isArray(c.who) && !c.next) {
+    const who = c.who.filter((x) => x != null && can(game, x));
+    if (who.length !== c.who.length) out = { ...c, who };
+  }
+  if (c.v === "favour" && c.from && (c.from.regard ?? 0) <= -2) out = { ...out, from: null };
+  if (c.v === "lower" && c.law && c.law.requirement <= 1) return null;
+  if (c.v === "provide") {
+    const bar = game.needBar?.[c.region + "|" + c.need];
+    if (bar === void 0 || bar >= CONFIG.needBarMax) return null;
+  }
+  return out;
+}
+// Has the card's main effect, its first keyword, nobody left to move? Such a card is not offered.
+function clausePrimaryDead(game, personId, pet) {
+  if (AT_HEARING) return false;
+  let raw;
+  try {
+    raw = clausesForRaw(game, personId, pet);
+  } catch {
+    return false;
+  }
+  if (!raw) return false;
+  const vis = raw.filter((c) => c.v !== "hidden" && clauseLive(c) && (c.v !== "rider" || c.kw));
+  if (!vis.length) return false;
+  const prim = vis.find((c) => c.primary) || vis[0];
+  if (prim.v === "rider") return false;
+  const kept = pruneClause(game, prim);
+  return !kept || !clauseLive(kept);
 }
 function applyClauseKind(game, personId, pet) {
   const person = game.people[personId];
@@ -28578,6 +28709,17 @@ function staticChips(pet) {
   }
 }
 function cardKeywords(pet, game, personId) {
+  const chips = cardKeywordsPlain(pet, game, personId);
+  if (!pet || !game || personId == null || !(pet.kind === "extend" || pet.kind === "aid")) return chips;
+  let fill = false;
+  try {
+    fill = widenFillsOnly(game, pet, personId);
+  } catch {
+    fill = false;
+  }
+  return fill ? chips.map((k) => (k.word === VERB_INFO.widen.word ? { ...k, head: `${k.word} · fills a short roll`, brief: WIDEN_FILL_BRIEF } : k)) : chips;
+}
+function cardKeywordsPlain(pet, game, personId) {
   if (!pet) return [];
   if (pet.rfNote && RESCUE_KINDS.has(pet.kind)) {
     const r = rescueKeyword(pet),
@@ -28887,7 +29029,7 @@ function assistantFlipText(game, person, view) {
     Tn = alt.target != null && g.people[alt.target] ? householdName(g.people[alt.target]) : "the other house",
     P = prn(person),
     PLAIN = {
-      extend: () => (alt.targetType ? `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would share ${D} with those already on it.` : ""),
+      extend: () => (alt.targetType ? (widenFillsOnly(g, alt, id) ? `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would make up what ${D} lacks; those already on it would carry as much as before.` : `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would share ${D} with those already on it.`) : ""),
       aid: () => (alt.order ? `${TEXT.capFirst(ESTATE_PLURAL[person.type].toLowerCase())} of the other regions would share ${D}.` : `${TEXT.capFirst(theEstateIn(person.region, alt.targetType))} would share ${D}, and ${N} would carry less of it.`),
       negotiate: () => `${N} would carry less of ${D} from now on, and the others more.`,
       impose: () => `${TEXT.capFirst(dutyNameInSentence(alt.proposal?.title || "the duty"))} would be founded, borne by ${listWithAnd((alt.proposal?.types || []).map((t) => theEstateIn(alt.proposal.key.split("|")[0], t)))}.`,
