@@ -4074,6 +4074,14 @@ function bodyOf(person) {
     ? `the commoners of the ${person.region}`
     : `the ${ESTATE_PLURAL[person.type]} of the realm`;
 }
+// A household's claim to have waited unheard holds only while it still owes what it waited on: the
+// same duty, or (where it named none) the same estate and region. The hearings of the week clear a
+// claim that no longer holds, so the card does not show one.
+function unansweredLive(game, person) {
+  const u = person?.unanswered;
+  if (!u) return false;
+  return u.lawId ? dutiesPaidBy(game, person).some((law) => law.id === u.lawId) : person.type === u.type && person.region === u.region;
+}
 function unheardNote(game, person) {
   const P = prn(person),
     lines = [`Unheard since ${stewardWeek(person.unanswered.week)}. ${P.Pos} petition is lodged with the court.`];
@@ -14556,11 +14564,28 @@ function dutyChangeless(game, pet, personId, law, alloc) {
   const next = dutyNext(game, pet, personId, law);
   if (next === true) return true;
   if (!next) return false;
-  const after = allocateDutyUncached(game, next);
-  if (Math.abs((after.shortfall || 0) - (alloc.shortfall || 0)) > 1e-9) return false;
-  for (let k = 0; k < game.people.length; k++)
-    if (Math.abs((after.nominalShares[k] || 0) - (alloc.nominalShares[k] || 0)) > 1e-9) return false;
-  return true;
+  // Whole units left over go to the less pressed, so the petitioner's own pressure after its hearing
+  // decides where they fall: pressed when set aside, untouched when granted a remedy, and eased when
+  // heard, by an amount that bonuses can make much larger than the base relief. A heard petition is
+  // tried at both ends of that range; if either leaves the duty as it is, the petition may do nothing,
+  // and it is not offered.
+  const me = personId != null ? game.people[personId] : null,
+    p0 = me ? me.pressure || 0 : 0,
+    plan = personId != null ? game.audiencePlan?.[personId] : null,
+    // the rescue on a card's reverse sets its household aside: it is the planner's own remedy
+    setAside = !!pet.rfNote || (!!plan?.rf && !!plan.back && pet.kind === plan.back.kind && (pet.lawId ?? null) === (plan.back.lawId ?? null) && !pet.flipOf),
+    heard = !setAside && !pet.flipOf && pet.face == null,
+    clampP = (v) => Math.max(0, Math.min(CONFIG.max, v)),
+    tries = !me ? [null] : setAside ? [clampP(p0 + (CONFIG.setAsidePressure || 0))] : heard ? [clampP(p0 - (CONFIG.baseRelief || 0) - ((me.regard ?? 0) <= -1 ? 1 : 0)), 0] : [p0];
+  const same = (pressure) => {
+    const g2 = pressure == null || pressure === p0 ? game : { ...game, people: game.people.map((p) => (p === me ? { ...p, pressure } : p)) },
+      after = allocateDutyUncached(g2, next);
+    if (Math.abs((after.shortfall || 0) - (alloc.shortfall || 0)) > 1e-9) return false;
+    for (let k = 0; k < game.people.length; k++)
+      if (Math.abs((after.nominalShares[k] || 0) - (alloc.nominalShares[k] || 0)) > 1e-9) return false;
+    return true;
+  };
+  return tries.some(same);
 }
 // A widening on a duty that is short: those already on the roll are held at their cap, so the
 // newcomers only make up what the roll lacks, and nobody already there carries any less.
@@ -24023,7 +24048,7 @@ function audienceViewUnwrapped(game, n, e = {}) {
         // Unheard as the docket leaves it: a docketed household that is answered loses the mark, and once
         // the docket is full, one left off it this week gains it.
         waitedSince: after.unanswered?.week ?? null,
-        waitingNow: game.people[personId].unanswered?.week ?? null,
+        waitingNow: unansweredLive(game, game.people[personId]) ? game.people[personId].unanswered.week : null,
         needLine: needLineFor(game2, pet),
         alternative: kA
           ? {
@@ -24069,7 +24094,9 @@ function audienceViewUnwrapped(game, n, e = {}) {
             after =
               U.length < s && !(Q < 0 && (uA || uA2))
                 ? f([...U, personId]).state
-                : audienceTrial(game2, personId, pet);
+                : Q < 0 && (uA || uA2)
+                  ? runWeek(game2, [personId], false, false, { altSlot: 0, word: null }).state
+                  : audienceTrial(game2, personId, pet);
           // The need this petition works toward. Met in full: a green ribbon. Its duty founded or bound but
           // still short: one split ribbon, a first step, saying what is still missing and what it costs meanwhile.
           const needKey = needOfPetition(game, game.people[personId], pet),
@@ -29391,7 +29418,7 @@ function PetitionCard({
                 word: !futGame.undertakings?.[view.id],
               },
               SOLVED_LINE = {
-                ear: "On the docket as it stands, it is heard this week.",
+                ear: c ? "On the docket as it stands, it is heard this week." : "Another ruling on the docket as it stands answers its claim, though it is not heard itself.",
                 slight: "The docket as it stands mends the slight.",
                 move: "The docket as it stands keeps it from moving.",
                 obj: "The docket as it stands settles its objections.",
