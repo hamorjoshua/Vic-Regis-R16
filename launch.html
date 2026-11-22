@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#1b2a22" />
     <title>Vicarius Regis: Petitions of the Realm</title>
 <script id="vr-boot-guard">
@@ -51572,6 +51572,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 /* Apply to every scroll container, including dynamically created overlays.
    This does not change overflow, touch-action, or ordinary scrolling. */
 html, body, body * { overscroll-behavior-y: none !important; }
+/* The page moves up and down only. Pinch and double-tap zoom, and dragging the page sideways (and the
+   sideways rubber-band), are off; rows that scroll sideways within themselves still do. */
+html, body { overflow-x: clip; overscroll-behavior: none !important; touch-action: pan-y; }
+@supports not (overflow-x: clip) { html, body { overflow-x: hidden; } }
 
 </style>
 <style>
