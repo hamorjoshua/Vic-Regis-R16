@@ -28557,8 +28557,19 @@ function assistantFlipText(game, person, view) {
     first = (t) => String(t || "").split(/(?<=[.!?])\s+(?=[A-Z“])/)[0].trim(),
     stop = (t) => TEXT.capFirst(String(t).trim()).replace(/\.?$/, "."),
     lc = (t) => (/^[A-Z][a-z]/.test(t) && !/^(The|An?) [A-Z]/.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : t);
+  // a contrary answer carries its own words: what the court would do instead, and the decree
+  let ow = null;
+  try {
+    ow = REVERSE_SPEC[alt.kind] && !alt.rfNote ? opposeWords(g, id, alt) : null;
+  } catch {
+    ow = null;
+  }
   const fc = FLIP_COURSE[alt.kind],
-    course = fc ? (typeof fc === "function" ? fc(alt) : fc) : lc(String(view.title || "").trim().replace(/^another matter:\s*/i, "")).replace(/\.$/, ""),
+    course = fc
+      ? typeof fc === "function" ? fc(alt) : fc
+      : ow?.instead
+        ? String(ow.instead).trim().replace(/\.$/, "")
+        : lc(String(view.title || "").trim().replace(/^another matter:\s*/i, "")).replace(/\.$/, ""),
     words = view.words || {};
   const D = alt.lawId != null && lawById(g, alt.lawId) ? dutyNameInSentence(lawById(g, alt.lawId).title) : "the duty",
     Tn = alt.target != null && g.people[alt.target] ? householdName(g.people[alt.target]) : "the other house",
@@ -28582,6 +28593,8 @@ function assistantFlipText(game, person, view) {
   } catch {
     what = "";
   }
+  // where nothing above says what the course does, the decree written for the card says it
+  if (!String(what).trim()) what = String(ow?.decree || words.decree || words.ruling || "").trim();
   const aside = view.alternative?.face === "matter";
   let text = `${aside ? "The court may set this petition aside and" : "The court may instead"} ${course}.${what ? " " + stop(what) : ""}`;
   if (aside) text += ` ${N}’s own petition would go unheard, and that would weigh on ${prn(person).obj}.`;
