@@ -35922,9 +35922,10 @@ function CalamityDecision({game,onRule}) {
   const outcome = !forecast.calamity ? "The calamity ends" : progress > c.progress ? "A week of relief" : "No relief this week";
   return jsx("div",{class:"overlay session cal-screen",role:"dialog","aria-modal":"true","aria-label":v.title,
     children:jsx("div",{class:"overlay-inner",children:jsx("article",{class:"cal-sheet",children:[
-      jsx("small",{children:c.region+" · "+(c.since === game.week ? "Week "+game.week : `Week ${game.week} · since week ${c.since}`)}),
-      jsx("h2",{children:v.title}),
-      jsx("p",{class:"cal-report",children:spec.appeal}),
+      jsx("small",{class:"cal-where",children:c.region+" · "+(c.since === game.week ? "Week "+game.week : `Week ${game.week} · since week ${c.since}`)}),
+      jsx("h2",{class:"cal-title",children:titleCase(v.title)}),
+      jsx(AssistantHead,{}),
+      jsx("p",{class:"hall-lede cal-report",role:"note","aria-label":"Your assistant’s account",children:`“${spec.appeal}”`}),
       terms.protectedByWork && jsx("div",{class:"cal-note cal-shelter",children:[jsx(WorkIcon,{work:c.region+"|"+spec.work})," ",spec.shelter]}),
       jsx("div",{class:"cal-status",children:[
         jsx("span",{class:"cal-status-label",children:"Weeks of relief"}),
@@ -51596,6 +51597,13 @@ html, body, body * { overscroll-behavior-y: none !important; }
 .cal-sheet .cal-opt-sub{font-size:.8rem;opacity:.85}
 .cal-sheet .cal-duty-head{font-weight:600}
 .cal-sheet .cal-harm{font-style:italic}
+
+.cal-sheet .cal-where{display:block;text-align:center}
+.cal-sheet h2.cal-title{font:400 34px/0.98 "Royal Textura",serif;color:#1f140d;margin:6px 0 12px;letter-spacing:.01em;text-align:center;text-wrap:balance}
+.cal-sheet .assistant-head{margin:4px 0 7px;color:var(--ink-soft)}
+.cal-sheet .assistant-head+.hall-lede.cal-report{margin-top:0;font-style:italic}
+/* Button text is balanced across its lines, so that no word is ever left alone on the last one. */
+button,.primary,[role=button]{text-wrap:balance}
 </style></head>
   <body><div id="vr-startup" style="position:fixed;inset:0;z-index:2147483647;background:#1b2a22;color:#ead6a5;display:grid;place-content:center;text-align:center;padding:24px;font-family:Georgia,serif"><h1 style="font-size:30px">Vicarius Regis</h1><p>Preparing the court…</p><details hidden><summary>Startup recovery</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre><button onclick="location.reload()">Retry</button> <button onclick="vrRepair()">Repair app cache</button></details><small>2026.11.21-r16 · Game 20</small></div><script>vrBootWatch()</script>
     <div id="app"><div role="status" style="padding:22vh 1em;text-align:center;color:#543a26;font:22px Georgia,serif">Preparing the court…</div></div>
