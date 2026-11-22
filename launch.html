@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#1b2a22" />
     <title>Vicarius Regis: Petitions of the Realm</title>
 <script id="vr-boot-guard">
@@ -4074,6 +4074,14 @@ function bodyOf(person) {
     ? `the commoners of the ${person.region}`
     : `the ${ESTATE_PLURAL[person.type]} of the realm`;
 }
+// A household's claim to have waited unheard holds only while it still owes what it waited on: the
+// same duty, or (where it named none) the same estate and region. The hearings of the week clear a
+// claim that no longer holds, so the card does not show one.
+function unansweredLive(game, person) {
+  const u = person?.unanswered;
+  if (!u) return false;
+  return u.lawId ? dutiesPaidBy(game, person).some((law) => law.id === u.lawId) : person.type === u.type && person.region === u.region;
+}
 function unheardNote(game, person) {
   const P = prn(person),
     lines = [`Unheard since ${stewardWeek(person.unanswered.week)}. ${P.Pos} petition is lodged with the court.`];
@@ -5907,7 +5915,7 @@ function openingHand(game) {
     const pet = [
       ...(game.audience.includes(person.id) ? [currentPetition(game, person.id)] : []),
       ...choosePetition(game, person.id),
-    ].find((p) => onRoll(person.id, p) && !shareMoot(game, p) && audiencePetitionValid(game, person.id, p));
+    ].find((p) => onRoll(person.id, p) && !shareMoot(game, p, person.id) && audiencePetitionValid(game, person.id, p));
     if (!pet) continue;
     // a stray petition of faith gives way before any other seat
     const out = stray()[0];
@@ -7662,6 +7670,9 @@ function hearPetition(game, personId) {
     return {
       status: "empty",
     };
+  // While a ruling is carried out, the tests that keep moot cards from being offered stand aside:
+  // a card offered at the start of the session is heard as offered.
+  AT_HEARING++;
   try {
     if (
       (applyRuling(trial, personId, pet, r),
@@ -7719,6 +7730,8 @@ function hearPetition(game, personId) {
       status: "blocked",
       reason: String(o),
     };
+  } finally {
+    AT_HEARING--;
   }
   ALLOC_CACHE.delete(trial);
   CONFIG.govAware && govEnforce(trial);
@@ -7891,6 +7904,7 @@ function petitionSignature(pet) {
     pet.quoteType ?? null,
     pet.accused ?? null,
     pet.charge ?? null,
+    !!pet.restitution,
     proposal
       ? [proposal.key, [...proposal.types].sort(), [...proposal.exclude].sort(), !!proposal.chorus]
       : null,
@@ -8155,18 +8169,24 @@ function runWeek(game, n, e = n.length >= 3, t = !0, r = !1) {
         ));
     }
     const region = trial.people[personId2].region,
-      R = trial.government?.form === "Official";
+      R = trial.government?.form === "Official",
+      // Paperwork is taken out of what the hearing gives: a household heard on its own petition is never
+      // left worse off for it than it came. One set aside or granted the court's remedy pays it in full.
+      paper = !R || B.petition.kind === "writ"
+        ? 0
+        : j
+          ? CONFIG.paperwork
+          : Math.max(0, Math.min(CONFIG.paperwork, (trial2.pressure || 0) - (trial.people[personId2].pressure || 0)));
     if (
-      (R &&
-        B.petition.kind !== "writ" &&
-        (addPressure(trial.people[personId2], CONFIG.paperwork),
+      (paper > 0 &&
+        (addPressure(trial.people[personId2], paper),
         logEvent(
           B,
-          `${trial.people[personId2].name}: +${CONFIG.paperwork} pressure (paperwork).`,
+          `${trial.people[personId2].name}: +${fmtNum(paper)} pressure (paperwork).`,
           "paperwork",
           [personId2],
           {
-            amount: CONFIG.paperwork,
+            amount: paper,
           },
         )),
       trial.people[personId2].writs.length > trial2.writs.length &&
@@ -10530,7 +10550,7 @@ function petitionOptionsStandard(game, personId) {
 
 function flipAlternativeBase(game, personId) {
   const alt = flipAlternativeBase0(game, personId);
-  return shareMoot(game, alt) ? null : alt;
+  return shareMoot(game, alt, personId) ? null : alt;
 }
 function flipAlternativeBase0(game, personId) {
   let front = null;
@@ -10539,9 +10559,9 @@ function flipAlternativeBase0(game, personId) {
   } catch (e) {
     front = null;
   }
-  for (const f of [flipAlternativeOrdinary, shortfallReverse, respiteReverse, lastReverse, opposeLast, foundLast]) {
+  for (const f of [flipAlternativeOrdinary, shortfallReverse, respiteReverse, lastReverse, opposeLast, foundLast, coreLast]) {
     const pet = f(game, personId);
-    if (pet && !sameRemedy(pet, front)) return pet;
+    if (pet && !sameRemedy(pet, front) && !shareMoot(game, pet, personId)) return pet;
   }
   return null;
 }
@@ -10632,7 +10652,7 @@ function shortfallReverse(game, personId) {
         }
       : { ...made, title: "Widen the duty", sfFlip: { from: null, aid: true, short, left: pick.short, frontLeft: null } };
   const pet = finalizePetition(game, personId, alt);
-  if (pet.kind !== "extend" || pet.targetType !== pick.estate || shareMoot(game, pet)) return null;
+  if (pet.kind !== "extend" || pet.targetType !== pick.estate || shareMoot(game, pet, personId)) return null;
   if (!audiencePetitionValid(game, personId, pet)) return null;
   return pet;
 }
@@ -10646,9 +10666,16 @@ function forbidEase(game, of) {
     .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
   return { key, grievance: false, estate: theEstateIn(of.region, of.type), house: h || null };
 }
-function forbidEaseText(game, of) {
-  const e = forbidEase(game, of),
-    E = e.estate.charAt(0).toUpperCase() + e.estate.slice(1);
+// The ease for both houses of a forbidden match, one to each estate: two houses of one estate ease it once.
+function forbidEases(game, a, b) {
+  const seen = new Set();
+  return [a, b].filter(Boolean).map((o) => forbidEase(game, o)).filter((e) => !seen.has(e.key) && seen.add(e.key));
+}
+function forbidEasesText(game, a, b) {
+  return forbidEases(game, a, b).map((e) => forbidEaseLine(e)).filter(Boolean).join(" ");
+}
+function forbidEaseLine(e) {
+  const E = e.estate.charAt(0).toUpperCase() + e.estate.slice(1);
   if (e.grievance) return `${E} lose 1 grievance.`;
   if (e.house) return `${E} have no grievance to lose, so ${householdName(e.house)} is eased by 1 pressure.`;
   return "";
@@ -10668,7 +10695,7 @@ function respiteReverse(game, personId) {
   if (!law || !law.active) return null;
   const tryPet = (alt) => {
     const pet = finalizePetition(game, personId, alt);
-    return pet && pet.kind === alt.kind && !shareMoot(game, pet) && audiencePetitionValid(game, personId, pet) ? pet : null;
+    return pet && pet.kind === alt.kind && !shareMoot(game, pet, personId) && audiencePetitionValid(game, personId, pet) ? pet : null;
   };
   const neg = negotiatePetition(game, person, law);
   if (neg) {
@@ -12439,6 +12466,10 @@ function currentPetition(game, personId) {
 function currentPetition__u(game, personId) {
   const person = game.people[personId];
   if (game.ruleAlt === personId && game.audience?.includes(personId)) {
+    // The reverse the court hears is the reverse the card shows: both are read from the one
+    // resolver (flipAlternativeBase), so no source of reverses can be shown and then ruled otherwise.
+    const shown = flipAlternativeBase({ ...game, ruleAlt: void 0 }, personId);
+    if (shown) return flipFinish(game, personId, shown);
     if (!game.audiencePlan?.[personId]?.rf) {
       const frontGame = { ...game, ruleAlt: void 0 };
       const front = currentPetition(frontGame, personId);
@@ -12464,12 +12495,17 @@ function currentPetition__u(game, personId) {
   let base = currentPetitionBase(game, personId);
   if (base.kind === "bulwark" && !PetitionPriority.valid(game, personId, base))
     base = choosePetition(game, personId).find(p => p.kind !== "bulwark" || PetitionPriority.valid(game, personId, p)) ?? retargetPetition(game, personId);
-  if (shareMoot(game, base)) base = choosePetition(game, personId).find((p) => !shareMoot(game, p)) ?? retargetPetition(game, personId);
+  if (shareMoot(game, base, personId)) base = choosePetition(game, personId).find((p) => !shareMoot(game, p, personId)) ?? retargetPetition(game, personId);
   if (noRoomToShift(game, personId, base))
     base =
-      choosePetition(game, personId).find((p) => !shareMoot(game, p) && !noRoomToShift(game, personId, p)) ??
+      choosePetition(game, personId).find((p) => !shareMoot(game, p, personId) && !noRoomToShift(game, personId, p)) ??
       retargetPetition(game, personId);
   base = handoverIfFull(game, personId, base);
+  return flipFinish(game, personId, base);
+}
+// The last touches every petition takes before it is shown or heard: the government's tag, the lock
+// on an entailed charter, and an estate petition's own words. A reverse takes them too.
+function flipFinish(game, personId, base) {
   const pet = epLock(game, CONFIG.govAware && game.government ? govTag(game, personId, base) : base);
   return ESTATE_TITLES[pet.kind]
     ? {
@@ -12968,7 +13004,7 @@ function applyRulingWithEstates(game, personId, pet, R) {
     }
     case "forbid": {
       const other = game.people[pet.target];
-      const eases = [person2, other].filter(Boolean).map((o) => forbidEase(game, o));
+      const eases = forbidEases(game, person2, other);
       for (const e of eases)
         if (e.grievance) addGrievance(game, e.key, -1);
         else if (e.house) addPressure(e.house, -1);
@@ -13598,8 +13634,9 @@ function flipAlternative(game, personId) {
   return withAllocCache(game, () => flipAlternative__u(game, personId));
 }
 function flipAlternative__u(game, personId) {
-  const r = flipAlternativeBase(game, personId);
-  if (!r || false) return r;
+  const base = flipAlternativeBase(game.ruleAlt === void 0 ? game : { ...game, ruleAlt: void 0 }, personId);
+  if (!base) return base;
+  const r = flipFinish(game, personId, base);
   return game.audiencePlan?.[personId]?.rf
     ? {
         ...r,
@@ -13628,7 +13665,7 @@ const govFormWithArticle = (A) => `${GOV_FORM[A] === "aristocracy" ? "an" : "a"}
   GOV_DECREES = {
     Noble: "The nobles are loosed from every duty, and every other estate shall keep the nobles’ days.",
     Merchant: "The merchants are loosed from every duty.",
-    Official: `Every hearing but a writ costs its petitioner ${CONFIG.paperwork} pressure in paperwork, and every writ sealed eases the officials of its region.`,
+    Official: `Every hearing but a writ costs its petitioner ${CONFIG.paperwork} pressure in paperwork, out of the relief the hearing gives, and every writ sealed eases the officials of its region.`,
     Cleric:
       "The clergy are loosed from every duty, and every other estate shall contribute to the relief houses, the parish schools and the poor.",
     Soldier:
@@ -13934,7 +13971,7 @@ function epText(game, personId, pet) {
     }
     case "forbid":
       petition = `Our house would join with ${target ? householdName(target) : "a neighbouring house"} by marriage, and both are willing. We ask the court’s blessing, that the match be made with honour.`;
-      ruling = `the match between ${householdName(person)} and ${target ? householdName(target) : "the other house"} is forbidden, and each estate keeps to its own. Both houses lose 1 regard. ${[person, target].filter(Boolean).map((o) => forbidEaseText(game, o)).join(" ")}`.trim();
+      ruling = `the match between ${householdName(person)} and ${target ? householdName(target) : "the other house"} is forbidden, and each estate keeps to its own. Both houses lose 1 regard. ${forbidEasesText(game, person, target)}`.trim();
       break;
     case "arbitrate":
       petition = `We have a quarrel with ${target ? householdName(target) : "a neighbour"}, and would sooner have it settled in the hall than in the lanes. Hear it next week, and we shall abide the ruling.`;
@@ -14515,13 +14552,88 @@ function handoverIfFull(game, personId, pet) {
   };
 }
 
-function shareMoot(game, pet) {
+let AT_HEARING = 0;
+function shareMoot(game, pet, personId) {
   if (!pet || pet.lawId == null || !SHARE_MOVING_KINDS.has(pet.kind)) return false;
   const law = lawById(game, pet.lawId);
   if (!law || !law.active || !(law.requirement > 0)) return false;
   const alloc = allocateDuty(game, law);
   // nothing is left for any household to give: support has taken the whole of it
-  return (alloc.relieved || 0) > 0 && !(alloc.shortfall > 1e-9) && alloc.shares.every((x) => !(x > 1e-9));
+  if ((alloc.relieved || 0) > 0 && !(alloc.shortfall > 1e-9) && alloc.shares.every((x) => !(x > 1e-9))) return true;
+  return AT_HEARING ? false : dutyChangeless(game, pet, personId, law, alloc);
+}
+// Would granting this petition leave the duty dealt exactly as it is? Shares are dealt in whole units
+// and no household carries more than its cap, so widening a roll where everyone carries a single unit,
+// or lightening a share pinned at the cap of a short duty, moves nothing. The duty is dealt again with
+// the petition's change, as its ruling would make it, and compared share by share and in its shortfall.
+function dutyChangeless(game, pet, personId, law, alloc) {
+  const next = dutyNext(game, pet, personId, law);
+  if (next === true) return true;
+  if (!next) return false;
+  // Whole units left over go to the less pressed, so the petitioner's own pressure after its hearing
+  // decides where they fall: pressed when set aside, untouched when granted a remedy, and eased when
+  // heard, by an amount that bonuses can make much larger than the base relief. A heard petition is
+  // tried at both ends of that range; if either leaves the duty as it is, the petition may do nothing,
+  // and it is not offered.
+  const me = personId != null ? game.people[personId] : null,
+    p0 = me ? me.pressure || 0 : 0,
+    plan = personId != null ? game.audiencePlan?.[personId] : null,
+    // the rescue on a card's reverse sets its household aside: it is the planner's own remedy
+    setAside = !!pet.rfNote || (!!plan?.rf && !!plan.back && pet.kind === plan.back.kind && (pet.lawId ?? null) === (plan.back.lawId ?? null) && !pet.flipOf),
+    heard = !setAside && !pet.flipOf && pet.face == null,
+    clampP = (v) => Math.max(0, Math.min(CONFIG.max, v)),
+    tries = !me ? [null] : setAside ? [clampP(p0 + (CONFIG.setAsidePressure || 0))] : heard ? [clampP(p0 - (CONFIG.baseRelief || 0) - ((me.regard ?? 0) <= -1 ? 1 : 0)), 0] : [p0];
+  const same = (pressure) => {
+    const g2 = pressure == null || pressure === p0 ? game : { ...game, people: game.people.map((p) => (p === me ? { ...p, pressure } : p)) },
+      after = allocateDutyUncached(g2, next);
+    if (Math.abs((after.shortfall || 0) - (alloc.shortfall || 0)) > 1e-9) return false;
+    for (let k = 0; k < game.people.length; k++)
+      if (Math.abs((after.nominalShares[k] || 0) - (alloc.nominalShares[k] || 0)) > 1e-9) return false;
+    return true;
+  };
+  return tries.some(same);
+}
+// A widening on a duty that is short: those already on the roll are held at their cap, so the
+// newcomers only make up what the roll lacks, and nobody already there carries any less.
+function widenFillsOnly(game, pet, personId) {
+  if (!pet || !(pet.kind === "extend" || pet.kind === "aid") || pet.lawId == null) return false;
+  const law = lawById(game, pet.lawId);
+  if (!law || !law.active) return false;
+  const next = dutyNext(game, pet, personId, law);
+  if (!next || next === true) return false;
+  const now = allocateDuty(game, law),
+    after = allocateDutyUncached(game, next);
+  if (!(after.shortfall < now.shortfall - 1e-9)) return false;
+  for (let k = 0; k < game.people.length; k++) {
+    if (pet.handover && k === personId) continue;
+    const was = now.nominalShares[k] || 0;
+    if (was > 1e-9 && (after.nominalShares[k] || 0) < was - 1e-9) return false;
+  }
+  return true;
+}
+const WIDEN_FILL_NOTE = "The roll is short: the newcomers make up what it lacks, and those already on it carry as much as before.";
+const WIDEN_FILL_BRIEF = "An estate or a house is put on a duty’s roll that is short. Those already on it are carrying all they can, so the newcomers make up what the roll lacks and nobody already there carries less. The requirement does not change.";
+// The duty as the petition's ruling would leave it, or true where the ruling could add no one.
+function dutyNext(game, pet, personId, law) {
+  const id = personId ?? null;
+  let next = null;
+  if ((pet.kind === "extend" || (pet.kind === "aid" && !pet.order)) && pet.targetType && !pet.handover) {
+    next = { ...law, types: law.types.includes(pet.targetType) ? law.types : [...law.types, pet.targetType] };
+    if (id != null && (pet.kind === "aid" || pet.writ)) next.personal = { ...law.personal, [id]: 1 };
+  } else if (pet.kind === "aid" && pet.order && id != null) {
+    const me = game.people[id],
+      w = dutyWeight(me, law) || 2,
+      join = game.people.filter((p) => p.type === me.type && p.region !== me.region && !law.order?.ids.includes(p.id) && !law.exclude.includes(p.id));
+    if (!join.length) return true;
+    next = { ...law, order: { type: me.type, ids: [...(law.order?.ids ?? []), ...join.map((p) => p.id)] }, personal: { ...law.personal, ...Object.fromEntries(join.map((p) => [p.id, w / 2])) } };
+  } else if (pet.kind === "negotiate" && id != null && !pet.joint && !pet.backers?.length) {
+    next = { ...law, personal: { ...law.personal, [id]: pet.targetWeight ?? 1 } };
+  } else if (pet.kind === "equalize") {
+    const restored = { ...law.personal };
+    for (const p of game.people) if (isLiable(p, law)) restored[p.id] = 2;
+    next = { ...law, personal: restored };
+  }
+  return next;
 }
 const PetitionPriority = {
   family(pet) {
@@ -14562,7 +14674,7 @@ const PetitionPriority = {
     }
     if (pet.kind === "repeal") return !!game.policies?.[pet.policy];
     if (pet.lawId != null && !lawById(game, pet.lawId)?.active) return false;
-    if (shareMoot(game, pet)) return false;
+    if (shareMoot(game, pet, personId)) return false;
     return true;
   },
   candidates(game, personId) {
@@ -15345,8 +15457,12 @@ PetitionPriority.candidates = function (game, personId) {
 
 const epOldValid = PetitionPriority.valid.bind(PetitionPriority);
 PetitionPriority.valid = (game, personId, pet) =>
-  pet?.kind === "staypolicy"
+  pet && CLAUSE_KINDS.has(pet.kind) && !REVERSE_SPEC[pet.kind] && clausePrimaryDead(game, personId, pet)
+    ? false
+    : pet?.kind === "staypolicy"
     ? pet.flipOf === "policy" && opposeOk(game, personId, pet)
+    : isCoreReverse(pet)
+    ? opposeOk(game, personId, pet)
     : pet?.kind === "keepwatch" && pet.flipOf === "shift"
     ? game.people[personId].type === "Commoner" && epOldValid(game, personId, { kind: "shift", to: "Soldier" })
     : pet?.kind === "succour"
@@ -19355,7 +19471,7 @@ TEXT.build0 = (game, personId, pet) => {
     case "forbid": {
       const O = pet.target != null ? game.people[pet.target] : null,
         T = O ? householdName(O) : "a neighbouring house",
-        both = [person, O].filter(Boolean).map((o) => forbidEaseText(game, o)).join(" ");
+        both = forbidEasesText(game, person, O);
       return {
         title: `Forbid the match with ${T}`,
         speech: TEXT.var([
@@ -23340,6 +23456,19 @@ function amenityLead(game, personId, pet) {
   return `Since ${stewardWeek(law.week, "your")}, when the court granted it${founder && founder.id !== p.id ? ` at the asking of ${householdName(founder)}` : ""}, we have answered for ${a.spoken}.`;
 }
 function petitionWords(game, personId2, pet) {
+  const words = petitionWordsPlain(game, personId2, pet);
+  if (!words || typeof words !== "object" || !pet || !(pet.kind === "extend" || pet.kind === "aid")) return words;
+  let fill = false;
+  try {
+    fill = withAllocCache(game, () => widenFillsOnly(game, pet, personId2));
+  } catch {
+    fill = false;
+  }
+  if (!fill) return words;
+  const add = (t) => (typeof t === "string" && t && !t.includes(WIDEN_FILL_NOTE) ? `${t.trim().replace(/([^.!?])$/, "$1.")} ${WIDEN_FILL_NOTE}` : t);
+  return { ...words, decree: add(words.decree), ruling: add(words.ruling) };
+}
+function petitionWordsPlain(game, personId2, pet) {
   const words = withAllocCache(game, () => petitionWords__u(game, personId2, pet));
   if (!words || typeof words.petition !== "string") return words;
   if (isCourtFace(pet)) {
@@ -23925,7 +24054,7 @@ function audienceViewUnwrapped(game, n, e = {}) {
         // Unheard as the docket leaves it: a docketed household that is answered loses the mark, and once
         // the docket is full, one left off it this week gains it.
         waitedSince: after.unanswered?.week ?? null,
-        waitingNow: game.people[personId].unanswered?.week ?? null,
+        waitingNow: unansweredLive(game, game.people[personId]) ? game.people[personId].unanswered.week : null,
         needLine: needLineFor(game2, pet),
         alternative: kA
           ? {
@@ -23971,7 +24100,9 @@ function audienceViewUnwrapped(game, n, e = {}) {
             after =
               U.length < s && !(Q < 0 && (uA || uA2))
                 ? f([...U, personId]).state
-                : audienceTrial(game2, personId, pet);
+                : Q < 0 && (uA || uA2)
+                  ? runWeek(game2, [personId], false, false, { altSlot: 0, word: null }).state
+                  : audienceTrial(game2, personId, pet);
           // The need this petition works toward. Met in full: a green ribbon. Its duty founded or bound but
           // still short: one split ribbon, a first step, saying what is still missing and what it costs meanwhile.
           const needKey = needOfPetition(game, game.people[personId], pet),
@@ -25522,6 +25653,31 @@ function allocationScale(parts, blankUnits = 0) {
       return {left: (100 * start / total) + "%", right: (100 * (total - ends[i]) / total) + "%"};
     }
   };
+}
+// A succour moves pressure, not a duty: below the card, the pressure of the house it eases, labelled.
+// The helper's own pressure is the card's; once the card is on the docket, both show the change.
+function SuccourPreview({ game, view, docketed }) {
+  const id = view.petition.target,
+    before = (view.before ?? game).people[id],
+    after = docketed && view.afterState ? view.afterState.people[id] : before;
+  if (!before || !after) return null;
+  const lvl = (v) => (v >= CONFIG.urgent ? 2 : v >= CONFIG.pressing ? 1 : 0),
+    name = householdName(before),
+    from = before.pressure || 0,
+    to = after.pressure || 0;
+  return jsx("div", {
+    class: "pc-succour",
+    children: jsx("span", {
+      class: "pc-succour-chip",
+      role: "img",
+      "aria-label": `${name}: pressure ${fmtNum(from)}${to !== from ? ` to ${fmtNum(to)}` : ""}`,
+      children: [
+        jsx("span", { class: "pc-succour-ico", "aria-hidden": "true", children: jsx(Icon, { icon: RECKONING_ESTATE_ICON[before.type], size: 12 }) }),
+        jsx("span", { class: "pc-succour-name", "aria-hidden": "true", children: name }),
+        jsx(ReckPips, { from, to, level: lvl(to) }),
+      ],
+    }),
+  });
 }
 function DutyPreview({ game, view, order, choice, current = false, whole = false, interactive = true }) {
   const petition = view.petition;
@@ -27280,9 +27436,10 @@ const REVERSE_SPEC = {
   },
 };
 for (const [k, s] of Object.entries(REVERSE_SPEC)) ESTATE_KEYWORDS[k] = [s.word, "", s.desc];
-const isOpposeReverse = (pet) => !!(pet && REVERSE_SPEC[pet.kind] && pet.flipOf && OPPOSE_FLIP[pet.flipOf] === pet.kind);
+const isOpposeReverse = (pet) => !!(pet && REVERSE_SPEC[pet.kind] && pet.flipOf && (OPPOSE_FLIP[pet.flipOf] === pet.kind || CORE_FLIP[pet.flipOf] === pet.kind));
 function opposeOk(game, personId, pet) {
   try {
+    if (CLAUSE_SPEC[pet.kind] && clausePrimaryDead(game, personId, pet)) return false;
     return !!REVERSE_SPEC[pet.kind].ok(opposeCtx(game, personId, pet));
   } catch {
     return false;
@@ -27624,7 +27781,8 @@ const CLAUSE_SPEC = {
   ],
   forbid: (c) => [
     cl("slight", [c.person, c.target], 1),
-    cl("absolve", [...new Set([c.person, c.target].filter(Boolean).map(constituencyOf))], 1),
+    // each estate keeps to its own: it loses 1 grievance, or, having none, its most pressed house is eased
+    ...forbidEases(c.game, c.person, c.target).map((e) => (e.grievance ? cl("absolve", e.key, 1) : cl("ease", e.house ? [e.house] : [], 1))),
     // the match may make itself in spite of the court, as one forbidden in the hall may
     hidden((game) => c.target && (game.hallLog = [...(game.hallLog || []), { week: game.week, matter: "match", a: c.id, b: c.target.id, choice: null, text: "", win: "b", docket: true }].slice(-40))),
     rites(c.person, "blessing"),
@@ -27850,6 +28008,314 @@ Object.assign(CLAUSE_SPEC, {
   nosin: (c) => [cl("chasten", laityOf(c.game, c.region), 1, { label: c.of(c.region, "laity"), group: true, primary: true }), cl("absolve", c.region + "|Commoner", 1)],
 });
 for (const k of Object.keys(CLAUSE_SPEC)) CLAUSE_KINDS.add(k);
+
+// ---------- The court's contrary answer to the common petitions ----------
+// The petitions that are not an estate's own (standing, compacts, shares, measures, government,
+// a loyal household, an accused one) had no reverse of their own. Each now carries the court's
+// contrary answer, offered only where nothing else has been set on the card (see coreLast). They
+// are written as the estate petitions' contrary answers are: words, a keyword and verbs.
+const CORE_FLIP = {
+  compact: "refusestanding",
+  pact: "forbidleague",
+  equalize: "keepshares",
+  resume: "keeplight",
+  recall: "livingroll",
+  repeal: "confirmmeasure",
+  overthrow: "upholdrule",
+  prepare: "sparestate",
+  loyalty: "callloyalty",
+  defend: "amends",
+  stint: "refusestint",
+  // the duty petitions, where their own reverse (a lighter share for a wider roll, or the reverse)
+  // cannot be had: the court holds to things as they stand, and spares whoever would have paid
+  aid: "holdroll",
+  extend: "holdroll",
+  retarget: "holdroll",
+  writ: "holdshare",
+  negotiate: "holdshare",
+  impose: "foundnone",
+  bridge: "foundnone",
+  shift: "keepstation",
+};
+// A grievance is held by the commoners of a region, and by each other estate across the realm.
+const estKeyIn = (region, estate) => (estate === "Commoner" ? `${region}|Commoner` : `Realm|${estate}`);
+// The estates on a duty's roll, by their grievance, leaving out the one named.
+const rollKeysBut = (c, except) => (c.law ? [...new Set(payersOf(c.game, c.law).map(constituencyOf))].filter((k) => k !== except) : []);
+// The other estates of a region, by their grievance.
+const otherRegionKeys = (c) => regionKeys(c.game, c.region).filter((k) => k !== constituencyOf(c.person));
+// The houses carrying a lighter share of a duty.
+const lighterOn = (c) => (c.law ? c.game.people.filter((p) => isLiable(p, c.law) && dutyWeight(p, c.law) > 0 && dutyWeight(p, c.law) < 2) : []);
+// The most pressed other house of the region, where one is pressed at all.
+const mostPressedNear = (c) =>
+  c.game.people
+    .filter((p) => p.id !== c.id && p.region === c.region && !p.charge && (p.pressure || 0) > 0)
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0] || null;
+const policyEstate = (c) => (c.pet.policy && c.game.policies?.[c.pet.policy] ? policyById(c.pet.policy)?.estate : null);
+const realmKeysOf = (c, estate) => [...new Set(c.game.people.filter((p) => p.type === estate).map(constituencyOf))];
+// Only an estate with grievance to lose can be relieved of it.
+const aggrieved = (c, keys) => keys.filter((k) => (c.game.grievance?.[k] || 0) > 1e-9);
+// Sparing an estate: it loses 1 grievance, or, having none, its most pressed house in the region is
+// eased by 1 (as when the court forbids a match).
+function spareClause(c, region, estate) {
+  if (!region || !estate) return null;
+  const k = estKeyIn(region, estate);
+  if ((c.game.grievance?.[k] || 0) > 1e-9) return cl("absolve", k, 1, { primary: true });
+  const h = c.game.people
+    .filter((p) => p.id !== c.id && p.region === region && p.type === estate && !p.charge && (p.pressure || 0) > 0)
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+  return h ? cl("ease", h, 1, { primary: true }) : null;
+}
+// For a call on the order: the fellows of the estate in the other regions, spared the half share.
+function spareFellows(c) {
+  const h = c.game.people
+    .filter((p) => p.type === c.person.type && p.region !== c.person.region && !p.charge && (p.pressure || 0) > 0 && !c.law?.order?.ids?.includes(p.id))
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+  return h ? cl("ease", h, 1, { primary: true }) : null;
+}
+const holdRollClause = (c) => (c.pet.order ? spareFellows(c) : c.law ? spareClause(c, c.law.region, c.pet.targetType) : null);
+const proposalRegion = (c) => c.pet.dest || c.pet.proposal?.key?.split("|")[0] || c.region;
+const foundSpared = (c) => (c.pet.proposal?.types || []).map((t) => spareClause(c, proposalRegion(c), t)).filter(Boolean);
+// The others on a duty's roll, spared the share the household would have shed.
+function holdShareClauses(c) {
+  const keys = aggrieved(c, rollKeysBut(c, constituencyOf(c.person)));
+  if (keys.length) return [cl("absolve", keys, 1, { primary: true })];
+  const h = c.law ? payersOf(c.game, c.law).filter((p) => p.id !== c.id && !p.charge && (p.pressure || 0) > 0).sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0] : null;
+  return h ? [cl("ease", h, 1, { primary: true })] : [];
+}
+Object.assign(REVERSE_SPEC, {
+  refusestanding: {
+    word: "Refusal",
+    desc: "the court’s contrary answer to a plea for legal status",
+    want: (c) => `wants the ${compactLabel(c.person)} given standing to dispute ${c.duty}`,
+    instead: (c) => `refuse them standing, to the relief of the others on ${c.duty}`,
+    decree: () => "",
+    brief: "The reverse of a plea for legal status. The estate is refused standing: the other estates on the duty lose 1 grievance, and the asking estate gains 1.",
+    ok: (c) => aggrieved(c, rollKeysBut(c, constituencyOf(c.person))).length > 0,
+    apply() {},
+  },
+  forbidleague: {
+    word: "No league",
+    desc: "the court’s contrary answer to a Compact",
+    want: (c) => `wants the ${compactLabel(c.person)} to form a Compact`,
+    instead: () => "forbid the league, to the relief of the region’s other estates",
+    decree: () => "",
+    brief: "The reverse of a Compact. The league is forbidden: the other estates of the region, who feared it, each lose 1 grievance.",
+    ok: (c) => aggrieved(c, otherRegionKeys(c)).length > 0,
+    apply() {},
+  },
+  keepshares: {
+    word: "Shares kept",
+    desc: "the court’s contrary answer to a call for equal shares",
+    want: (c) => `wants everyone on ${c.duty} to carry alike again`,
+    instead: () => "let the lighter shares stand",
+    decree: () => "",
+    brief: "The reverse of a call for equal shares. The lighter shares stand: each house that holds one gains 1 regard, and its estate loses 1 grievance.",
+    ok: (c) => lighterOn(c).length > 0,
+    apply() {},
+  },
+  keeplight: {
+    word: "Kept light",
+    desc: "the court’s contrary answer to an offer to carry a full share",
+    want: (c) => `offers to carry ${c.P.pos} full share of ${c.duty} again`,
+    instead: () => "decline the offer, and ease the household instead",
+    decree: () => "",
+    brief: "The reverse of an offer to carry a full share again. The court declines it: the household keeps its lighter share and is eased by 1 pressure.",
+    ok: (c) => (c.person.pressure || 0) > 0,
+    apply() {},
+  },
+  livingroll: {
+    word: "Living roll",
+    desc: "the court’s contrary answer to a recall",
+    want: (c) => `wants ${c.duty} bound to the households first bound by it`,
+    instead: () => "keep the duty on its living roll",
+    decree: () => "",
+    brief: "The reverse of a recall. The duty stays on its living roll: the other estates on it, spared the quarrel, each lose 1 grievance.",
+    ok: (c) => aggrieved(c, rollKeysBut(c, constituencyOf(c.person))).length > 0,
+    apply() {},
+  },
+  confirmmeasure: {
+    word: "Confirmed",
+    desc: "the court’s contrary answer to a repeal",
+    want: (c) => `wants ${c.pet.policy ? POLICY_TEXT[c.pet.policy]?.name || c.pet.policy : "the measure"} repealed`,
+    instead: () => "confirm the measure, to the satisfaction of those it serves",
+    decree: () => "",
+    brief: "The reverse of a repeal. The measure stands: the estate it serves loses 1 grievance, and the asking estate gains 1.",
+    ok: (c) => !!policyEstate(c) && aggrieved(c, realmKeysOf(c, policyEstate(c))).length > 0,
+    apply() {},
+  },
+  upholdrule: {
+    word: "Upheld",
+    desc: "the court’s contrary answer to a call to overthrow the government",
+    want: () => "wants the government overthrown",
+    instead: () => "uphold the government",
+    decree: () => "",
+    brief: "The reverse of a call to overthrow the government. The government stands: the ruling estate loses 1 grievance, and the asking estate gains 1.",
+    ok: (c) => !!c.game.government?.form && aggrieved(c, realmKeysOf(c, c.game.government.form)).length > 0,
+    apply() {},
+  },
+  sparestate: {
+    word: "Spared",
+    desc: "the court’s contrary answer to a reserved extension",
+    want: (c) => `wants an offer kept to put ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "another estate"} on ${c.duty} later`,
+    instead: (c) => `close the dispute and spare ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "the other estate"}`,
+    decree: () => "",
+    brief: "The reverse of a reserved extension. No offer is kept: the estate it would have named loses 1 grievance.",
+    ok: (c) => !!c.pet.targetType && !!c.law && aggrieved(c, [estKeyIn(c.law.region, c.pet.targetType)]).length > 0,
+    apply() {},
+  },
+  callloyalty: {
+    word: "Service",
+    desc: "the court’s contrary answer to an assurance of loyalty",
+    want: () => "wants only to assure the Crown of its loyalty",
+    instead: (c) => `take ${c.P.obj} at ${c.P.pos} word, and have ${c.P.obj} bear part of a pressed neighbour’s burden`,
+    decree: () => "",
+    brief: "The reverse of an assurance of loyalty. The court takes the household at its word: the most pressed other house of its region is eased by 1, and the loyal house takes 1 pressure.",
+    ok: (c) => !!mostPressedNear(c),
+    apply() {},
+  },
+  amends: {
+    word: "Amends",
+    desc: "the court’s contrary answer to the accused’s denial",
+    want: () => "denies the charge and asks you to dismiss it",
+    instead: () => "settle the charge by amends, to the satisfaction of the accuser",
+    decree: () => "",
+    brief: "The reverse of the accused’s denial. The charge is cleared, but by amends, not dismissal: the accused takes 1 pressure, and the accuser gains 1 regard.",
+    ok: (c) => !!c.person.charge,
+    apply() {},
+  },
+  holdroll: {
+    word: "Roll held",
+    desc: "the court’s contrary answer to a call to widen a duty",
+    want: (c) => (c.pet.order ? `wants ${c.P.pos} fellows of the other regions to share ${c.duty}` : `wants ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "another estate"} put on ${c.duty}`),
+    instead: (c) => `keep the roll of ${c.duty} as it stands, and spare ${c.pet.order ? `${c.P.pos} fellows of the other regions` : c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "the other estate"}`,
+    decree: () => "",
+    brief: "The reverse of a call to widen a duty. The roll stands as it is: the estate that would have been put on it loses 1 grievance, or, having none, its most pressed house in the region is eased by 1. Where the household called on its fellows in the other regions, the most pressed of them is eased by 1.",
+    ok: (c) => !!c.law && !!holdRollClause(c),
+    apply() {},
+  },
+  holdshare: {
+    word: "Share held",
+    desc: "the court’s contrary answer to a plea for lighter or recorded terms",
+    want: (c) => `wants ${c.P.pos} terms under ${c.duty} eased`,
+    instead: (c) => `hold ${c.P.obj} to ${c.P.pos} full share, to the relief of the others on ${c.duty}`,
+    decree: () => "",
+    brief: "The reverse of a plea for lighter or recorded terms under a duty. The household keeps its full share: the other estates on the roll each lose 1 grievance, or, where none has any, the most pressed other house on the roll is eased by 1.",
+    ok: (c) => !!c.law && holdShareClauses(c).length > 0,
+    apply() {},
+  },
+  foundnone: {
+    word: "No founding",
+    desc: "the court’s contrary answer to a call to found a duty",
+    want: (c) => `wants ${dutyNameInSentence(c.pet.proposal?.title || "a new duty")} founded`,
+    instead: (c) => `found nothing, and spare ${listWithAnd((c.pet.proposal?.types || []).map((t) => theEstateIn(proposalRegion(c), t)))}`,
+    decree: () => "",
+    brief: "The reverse of a call to found a duty. No duty is founded: each estate that would have borne it loses 1 grievance, or, having none, its most pressed house in the region is eased by 1.",
+    ok: (c) => foundSpared(c).length > 0,
+    apply() {},
+  },
+  keepstation: {
+    word: "Station kept",
+    desc: "the court’s contrary answer to a change of estate",
+    want: (c) => `wants to be recognized among ${c.pet.to ? ESTATE_PLURAL[c.pet.to] : "another estate"}`,
+    instead: (c) => `keep ${c.P.obj} in ${c.P.pos} station, and spare ${c.pet.to ? theEstateIn(c.region, c.pet.to) : "the other estate"} a newcomer`,
+    decree: () => "",
+    brief: "The reverse of a change of estate. The household stays where it is: the estate it would have joined loses 1 grievance, or, having none, its most pressed house in the region is eased by 1.",
+    ok: (c) => !!spareClause(c, c.region, c.pet.to),
+    apply() {},
+  },
+  refusestint: {
+    word: "No stint",
+    desc: "the court’s contrary answer to a stint",
+    want: (c) => `wants the commoners of the ${c.region} to share their pressure among themselves`,
+    instead: () => "refuse the stint, and ease the most pressed of them",
+    decree: () => "",
+    brief: "The reverse of a stint. The commoners are not pooled; instead the most pressed commoner household of the region is eased by 1.",
+    ok: (c) => c.game.people.some((p) => p.region === c.region && p.type === "Commoner" && !p.charge && (p.pressure || 0) > 0),
+    apply() {},
+  },
+});
+Object.assign(ESTATE_TITLES, {
+  refusestanding: "Refuse Them Standing",
+  forbidleague: "Forbid the League",
+  keepshares: "Let the Lighter Shares Stand",
+  keeplight: "Keep Them Light",
+  livingroll: "Keep the Living Roll",
+  confirmmeasure: "Confirm the Measure",
+  upholdrule: "Uphold the Government",
+  sparestate: "Spare the Other Estate",
+  callloyalty: "Call on Their Loyalty",
+  amends: "Settle by Amends",
+  refusestint: "Refuse the Stint",
+  holdroll: "Hold the Roll",
+  holdshare: "Hold Them to Their Share",
+  foundnone: "Found No Duty",
+  keepstation: "Keep Them in Their Station",
+});
+for (const k of Object.values(CORE_FLIP)) ESTATE_KEYWORDS[k] = [REVERSE_SPEC[k].word, "", REVERSE_SPEC[k].desc];
+Object.assign(CLAUSE_SPEC, {
+  refusestanding: (c) => {
+    const own = constituencyOf(c.person);
+    return [cl("absolve", aggrieved(c, rollKeysBut(c, own)), 1, { primary: true }), cl("aggrieve", own, 1)];
+  },
+  forbidleague: (c) => [cl("absolve", aggrieved(c, otherRegionKeys(c)), 1, { primary: true })],
+  keepshares: (c) => {
+    const light = lighterOn(c);
+    return [cl("favour", light, 1, { primary: true }), cl("absolve", aggrieved(c, [...new Set(light.map(constituencyOf))]), 1)];
+  },
+  keeplight: (c) => [cl("ease", c.person, 1, { primary: true })],
+  livingroll: (c) => [cl("absolve", aggrieved(c, rollKeysBut(c, constituencyOf(c.person))), 1, { primary: true })],
+  confirmmeasure: (c) => {
+    const keys = aggrieved(c, realmKeysOf(c, policyEstate(c))),
+      own = constituencyOf(c.person);
+    return [cl("absolve", keys, 1, { primary: true }), ...(c.person.type === policyEstate(c) ? [] : [cl("aggrieve", own, 1)])];
+  },
+  upholdrule: (c) => {
+    const keys = aggrieved(c, realmKeysOf(c, c.game.government.form)),
+      own = constituencyOf(c.person);
+    return [cl("absolve", keys, 1, { primary: true }), ...(c.person.type === c.game.government.form ? [] : [cl("aggrieve", own, 1)])];
+  },
+  sparestate: (c) => [cl("absolve", estKeyIn(c.law.region, c.pet.targetType), 1, { primary: true })],
+  callloyalty: (c) => [cl("ease", mostPressedNear(c), 1, { primary: true }), cl("press", c.person, 1)],
+  amends: (c) => {
+    const accuser = c.person.charge?.by != null ? c.game.people[c.person.charge.by] : null;
+    return [
+      { ...rider("Amends", "The charge is cleared by amends: the accused is not vindicated, and the accuser is satisfied.", `The charge against ${c.N} is cleared by amends`, (game) => (game.people[c.id].charge = null)), primary: true },
+      cl("press", c.person, 1),
+      ...(accuser && accuser.id !== c.id ? [cl("favour", accuser, 1)] : []),
+    ];
+  },
+  holdroll: (c) => [holdRollClause(c)],
+  holdshare: (c) => holdShareClauses(c),
+  foundnone: (c) => foundSpared(c),
+  keepstation: (c) => [spareClause(c, c.region, c.pet.to)],
+  refusestint: (c) => {
+    const h = c.game.people
+      .filter((p) => p.region === c.region && p.type === "Commoner" && !p.charge && (p.pressure || 0) > 0)
+      .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+    return [cl("ease", h, 1, { primary: true })];
+  },
+});
+for (const k of Object.keys(CLAUSE_SPEC)) CLAUSE_KINDS.add(k);
+const isCoreReverse = (pet) => !!(pet && pet.flipOf && CORE_FLIP[pet.flipOf] === pet.kind && REVERSE_SPEC[pet.kind]);
+// The last reverse tried: the court's contrary answer to a common petition, where the card has no
+// other. A charged household's denial may be turned too: its contrary answer is to settle by amends.
+function coreLast(game, personId) {
+  if (game.lesson) return null;
+  const person = game.people[personId];
+  if (!person || (person.regard ?? 0) <= -2 || game.audiencePlan?.[personId]?.rf) return null;
+  const g0 = game.ruleAlt === void 0 ? game : { ...game, ruleAlt: void 0 };
+  const front = currentPetition(g0, personId),
+    kind = front && CORE_FLIP[front.kind];
+  if (!kind || front.ambition || (person.charge && front.kind !== "defend")) return null;
+  const rev = {
+    kind,
+    title: ESTATE_TITLES[kind],
+    flipOf: front.kind,
+    ...Object.fromEntries(["lawId", "policy", "target", "targetType", "proposal", "dest", "to", "order"].filter((f) => front[f] !== void 0).map((f) => [f, front[f]])),
+  };
+  if (!opposeOk(game, personId, rev)) return null;
+  return (kind === "amends" ? PetitionPriority.valid(game, personId, rev) : audiencePetitionValid(game, personId, rev)) ? rev : null;
+}
 // The assistant's account of a ruling written in verbs: who it touches and how, in words, without
 // the numbers the keywords and the decree carry.
 function narrateClauses(game, personId, pet) {
@@ -27956,8 +28422,60 @@ function narrateClauses(game, personId, pet) {
 }
 
 function clausesFor(game, personId, pet) {
+  const raw = clausesForRaw(game, personId, pet);
+  return raw ? raw.map((c) => pruneClause(game, c)).filter(Boolean) : null;
+}
+function clausesForRaw(game, personId, pet) {
   const f = CLAUSE_SPEC[pet.kind];
-  return f ? f(verbCtx(game, personId, pet)) : null;
+  return f ? f(verbCtx(game, personId, pet)).filter(Boolean) : null;
+}
+// A clause names only those it can still move: a house already at the top of regard (with no
+// pressure for the excess to ease), at the bottom, with no pressure to ease or at the most, already as
+// devout or superstitious as can be (or as little), or an estate with no grievance to lose, is left
+// out, so that the card states only what will happen. A clause left with no one to move is dropped.
+const CLAUSE_CAN_MOVE = {
+  favour: (game, p) => (p.regard ?? 0) < 2 || (!!CONFIG.regardSpill && (p.pressure || 0) > 0),
+  slight: (game, p) => (p.regard ?? 0) > -2,
+  ease: (game, p) => (p.pressure || 0) > 0,
+  press: (game, p) => (p.pressure || 0) < CONFIG.max,
+  credit: (game, p) => superstitionOf(p) < FAITH_MAX,
+  discredit: (game, p) => superstitionOf(p) > 0,
+  hallow: (game, p) => devotionOf(p) < FAITH_MAX,
+  chasten: (game, p) => devotionOf(p) > 0,
+  absolve: (game, k) => (game.grievance?.[k] || 0) > 1e-9,
+};
+function pruneClause(game, c) {
+  if (!c) return null;
+  const can = CLAUSE_CAN_MOVE[c.v];
+  let out = c;
+  if (can && Array.isArray(c.who) && !c.next) {
+    const who = c.who.filter((x) => x != null && can(game, x));
+    if (who.length !== c.who.length) out = { ...c, who };
+  }
+  if (c.v === "favour" && c.from && (c.from.regard ?? 0) <= -2) out = { ...out, from: null };
+  if (c.v === "lower" && c.law && c.law.requirement <= 1) return null;
+  if (c.v === "provide") {
+    const bar = game.needBar?.[c.region + "|" + c.need];
+    if (bar === void 0 || bar >= CONFIG.needBarMax) return null;
+  }
+  return out;
+}
+// Has the card's main effect, its first keyword, nobody left to move? Such a card is not offered.
+function clausePrimaryDead(game, personId, pet) {
+  if (AT_HEARING) return false;
+  let raw;
+  try {
+    raw = clausesForRaw(game, personId, pet);
+  } catch {
+    return false;
+  }
+  if (!raw) return false;
+  const vis = raw.filter((c) => c.v !== "hidden" && clauseLive(c) && (c.v !== "rider" || c.kw));
+  if (!vis.length) return false;
+  const prim = vis.find((c) => c.primary) || vis[0];
+  if (prim.v === "rider") return false;
+  const kept = pruneClause(game, prim);
+  return !kept || !clauseLive(kept);
 }
 function applyClauseKind(game, personId, pet) {
   const person = game.people[personId];
@@ -28243,10 +28761,23 @@ function staticChips(pet) {
     case "stint":
       return [own("Stint")];
     default:
-      return ck ? [{ word: ck.word, head: ck.head, brief: ck.brief }] : [];
+      if (ck) return [{ word: ck.word, head: ck.head, brief: ck.brief }];
+      // a contrary answer with no clauses of its own is named by its own keyword
+      return REVERSE_SPEC[pet.kind] ? [own(REVERSE_SPEC[pet.kind].word)] : [];
   }
 }
 function cardKeywords(pet, game, personId) {
+  const chips = cardKeywordsPlain(pet, game, personId);
+  if (!pet || !game || personId == null || !(pet.kind === "extend" || pet.kind === "aid")) return chips;
+  let fill = false;
+  try {
+    fill = widenFillsOnly(game, pet, personId);
+  } catch {
+    fill = false;
+  }
+  return fill ? chips.map((k) => (k.word === VERB_INFO.widen.word ? { ...k, head: `${k.word} · fills a short roll`, brief: WIDEN_FILL_BRIEF } : k)) : chips;
+}
+function cardKeywordsPlain(pet, game, personId) {
   if (!pet) return [];
   if (pet.rfNote && RESCUE_KINDS.has(pet.kind)) {
     const r = rescueKeyword(pet),
@@ -28538,14 +29069,25 @@ function assistantFlipText(game, person, view) {
     first = (t) => String(t || "").split(/(?<=[.!?])\s+(?=[A-Z“])/)[0].trim(),
     stop = (t) => TEXT.capFirst(String(t).trim()).replace(/\.?$/, "."),
     lc = (t) => (/^[A-Z][a-z]/.test(t) && !/^(The|An?) [A-Z]/.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : t);
+  // a contrary answer carries its own words: what the court would do instead, and the decree
+  let ow = null;
+  try {
+    ow = REVERSE_SPEC[alt.kind] && !alt.rfNote ? opposeWords(g, id, alt) : null;
+  } catch {
+    ow = null;
+  }
   const fc = FLIP_COURSE[alt.kind],
-    course = fc ? (typeof fc === "function" ? fc(alt) : fc) : lc(String(view.title || "").trim().replace(/^another matter:\s*/i, "")).replace(/\.$/, ""),
+    course = fc
+      ? typeof fc === "function" ? fc(alt) : fc
+      : ow?.instead
+        ? String(ow.instead).trim().replace(/\.$/, "")
+        : lc(String(view.title || "").trim().replace(/^another matter:\s*/i, "")).replace(/\.$/, ""),
     words = view.words || {};
   const D = alt.lawId != null && lawById(g, alt.lawId) ? dutyNameInSentence(lawById(g, alt.lawId).title) : "the duty",
     Tn = alt.target != null && g.people[alt.target] ? householdName(g.people[alt.target]) : "the other house",
     P = prn(person),
     PLAIN = {
-      extend: () => (alt.targetType ? `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would share ${D} with those already on it.` : ""),
+      extend: () => (alt.targetType ? (widenFillsOnly(g, alt, id) ? `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would make up what ${D} lacks; those already on it would carry as much as before.` : `${TEXT.capFirst(theEstateIn(lawById(g, alt.lawId)?.region || person.region, alt.targetType))} would share ${D} with those already on it.`) : ""),
       aid: () => (alt.order ? `${TEXT.capFirst(ESTATE_PLURAL[person.type].toLowerCase())} of the other regions would share ${D}.` : `${TEXT.capFirst(theEstateIn(person.region, alt.targetType))} would share ${D}, and ${N} would carry less of it.`),
       negotiate: () => `${N} would carry less of ${D} from now on, and the others more.`,
       impose: () => `${TEXT.capFirst(dutyNameInSentence(alt.proposal?.title || "the duty"))} would be founded, borne by ${listWithAnd((alt.proposal?.types || []).map((t) => theEstateIn(alt.proposal.key.split("|")[0], t)))}.`,
@@ -28563,6 +29105,8 @@ function assistantFlipText(game, person, view) {
   } catch {
     what = "";
   }
+  // where nothing above says what the course does, the decree written for the card says it
+  if (!String(what).trim()) what = String(ow?.decree || words.decree || words.ruling || "").trim();
   const aside = view.alternative?.face === "matter";
   let text = `${aside ? "The court may set this petition aside and" : "The court may instead"} ${course}.${what ? " " + stop(what) : ""}`;
   if (aside) text += ` ${N}’s own petition would go unheard, and that would weigh on ${prn(person).obj}.`;
@@ -28905,7 +29449,7 @@ function PetitionCard({
                 word: !futGame.undertakings?.[view.id],
               },
               SOLVED_LINE = {
-                ear: "On the docket as it stands, it is heard this week.",
+                ear: c ? "On the docket as it stands, it is heard this week." : "Another ruling on the docket as it stands answers its claim, though it is not heard itself.",
                 slight: "The docket as it stands mends the slight.",
                 move: "The docket as it stands keeps it from moving.",
                 obj: "The docket as it stands settles its objections.",
@@ -29143,6 +29687,7 @@ function PetitionCard({
         order: hearingOrder,
         choice: hearingChoice,
       }),
+      view.petition?.kind === "succour" && view.petition.target != null && jsx(SuccourPreview, { game: game2, view, docketed: c }),
       jsx("footer", {
         class: "pc-foot",
         ref: footFit,
@@ -30056,7 +30601,7 @@ function customsText() {
       heading: "Alternative petitions & flips",
       paragraphs: [
         "Only some cards have an alternative petition. When a flip is available, it offers another way to address the matter; a card without a flip must be heard as presented or left waiting. Availability depends on the petition and the household’s circumstances.",
-        "Where nothing else is set on its reverse, a petition of an estate, a household’s kindness, an officer’s petition or a petition of faith carries the court’s contrary answer: the court doing the opposite of what is asked. Succour comes first; where the court has set succour on a card, that is its reverse. What each contrary answer does is explained under its keyword on the card.",
+        "Where nothing else is set on its reverse, every petition carries the court’s contrary answer: the court doing the opposite of what is asked. This holds for a petition of an estate, a household’s kindness, an officer’s petition or a petition of faith, and for the common petitions too: a plea for legal status may be refused, a Compact forbidden, lighter shares let stand, a measure confirmed, the government upheld, a loyal household called on to help a pressed neighbour, and an accused household’s denial settled by amends. Succour comes first; where the court has set succour on a card, that is its reverse. What each contrary answer does is explained under its keyword on the card.",
         "An alternative may replace personal relief with a change to who carries a duty, or replace an accusation with restitution. Some cards begin with the structural remedy already facing upward. Read both the proposed decree and its effects: flipping does not always mean choosing the more generous remedy. A household asking to rise out of a duty that cannot spare it may be let to rise and kept on that duty by its own bond; it loses 1 regard for it.",
         `Your first flip of the week costs no standing and may be used on an eligible card whether or not it is on the docket. Hearing that household grants the side you selected. A household granted a reverse has not got what it came to ask: it gets none of a hearing’s relief, nor any relief for its place in the order, so its pressure is left as it was, and it loses 1 regard. Some reverses cost more on their own terms, as their keywords say. A household at −2 regard cannot be flipped. A card turned to another matter, the court’s rescue for an estate near breach, sets aside the petition its household came with: that household is not heard, so it gets none of a hearing’s relief, nor any relief for its place in the order, and it takes ${C.setAsidePressure} pressure besides, whatever the matter does for others. Granting the alternative also answers, in part, its own lodged petition on the same duty. Purveyance is a card of the same kind: when a duty’s shortfall would bring on a disaster, fail an endowment, ruin a work or default a syndicate, and no petition in the audience mends it, a household may be set aside to supply what is wanting, for that week alone.`,
         `A second flip in the same week, on any card that can be flipped, costs ${C.secondFlipCost} standing. It is paid from the reserve first and is refused only if it would spend the court’s last point. The standing watch makes it free.`,
@@ -30187,7 +30732,7 @@ function customsText() {
         C.quarterDays
           ? `The realm’s demands grow on the four quarter days: Lady Day in the ${ordinalWords(QUARTER_DAYS[0].wk)} week of each year of your stewardship, Midsummer in the ${ordinalWords(QUARTER_DAYS[1].wk)}, Michaelmas in the ${ordinalWords(QUARTER_DAYS[2].wk)} and Christmas in the ${ordinalWords(QUARTER_DAYS[3].wk)}. Growth accrues at ${C.growthBudget} units for every ${C.growthEvery} weeks and falls due on the quarter day, as rent does, with one more unit for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work. At Lady Day ${Math.round(C.quarterFocus * 100)}% of it falls first on the soldiers’ duties, at Midsummer on the public works and at Christmas on the duties that keep the poor; the rest, and all of it at Michaelmas, is placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`
           : `The realm’s demands grow. Every ${C.growthEvery} weeks it adds ${C.growthBudget} units, one more for every ${C.growthBudgetStep} weeks of the reign and one fewer for each established work, each placed on the duty where it weighs most on those who carry it. A burden carried by few households draws the growth; one shared widely escapes it.`,
-        "At the weekly close, count one unit of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw. A region enters if its own households outnumber the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Until the standing service is supplied, each neglected week costs 1 standing and raises local superstition again. Hiring temporary relief buys a week at the stated price.",
+        "At the weekly close, count one unit of available labour per household in the realm. Count the three ordinary duties in each region from the outset. An undiscovered ordinary duty counts at its founding requirement. Once recorded, it counts at its current requirement, or zero if abolished. Other duties count only while active. Unfilled units still count. Subtract this total from the available labour. Only a positive balance opens the calamity draw. A region enters if its own households outnumber the units required by duties based there. If several regions pass the draw, the one with the largest share of its labour free sends the messenger. Each region has four distinct calamities. While a regional service has yet to be founded, the court receives a matter for a missing service first. Each charter keeps its own roll. Once surplus qualifies a region, its weekly chance to pass the calamity draw is 75% where the laity are lax, 50% otherwise, and 25% where they are devout. Only one calamity is heard at a time. Its arrival adds 1 superstition to each local household. Each week the standing service is not fully supplied at the weekly close raises local superstition again; unless the court hired relief for that week, it also costs 1 standing and puts 1 pressure on a stricken household. Hired relief costs 3 standing, or 2 where the region has a work that shelters against the calamity, and does not count toward its end. The calamity ends after two fully supplied weeks, or one where such a work stands; the service stays on the roll afterwards.",
         `Local requests. Each estate also has requests of its own: commoners a mill, common grazing or a parish feast; merchants a market charter, a toll road or a guild hall; soldiers drill grounds or veterans’ pensions; clerics a pilgrims’ hospice or a saint’s feast day; officials a survey or a public registry; nobles a hunting preserve or a family chapel. Each is a small duty of ${C.amenityRequirement} units paid by other estates, and while carried it relieves the asking estate’s households in the region ${rate(C.amenityBenefit)}. A household at ease asks for these; a pressed one rarely does, and none asks while its estate in the region is pressing on average.`,
       ],
     },
@@ -30266,7 +30811,7 @@ function customsText() {
       heading: "Governments",
       paragraphs: [
         `No estate petitions to govern. When a constituency’s grievance reaches ${breach} and no government stands, its estate seizes the government at the close: commoners establish a commonwealth, nobles an aristocracy, merchants a plutocracy, officials a bureaucracy, clerics a theocracy, soldiers a stratocracy. While it rules, its own constituencies do not breach; at ${breach} they bring the government down.`,
-        "Each government tilts the realm toward one estate: the ruling estate is released from duties, or others are required to carry more, or, under a bureaucracy, every hearing but a writ costs paperwork. Under a commonwealth every duty falls on the whole region and no one rises.",
+        "Each government tilts the realm toward one estate: the ruling estate is released from duties, or others are required to carry more, or, under a bureaucracy, every hearing but a writ costs paperwork, taken out of the relief the hearing gives. Under a commonwealth every duty falls on the whole region and no one rises.",
         `After ${C.govMinWeeks} weeks, a household the government does not favour may petition to overthrow it, if its constituency’s grievance stands at ${C.overthrowGrievance} or more or it is itself urgent. Sealing that restores every duty to the estates it bound before, except where a later ruling has since changed it on its own grounds.`,
       ],
     },
@@ -35360,17 +35905,17 @@ function closeCalamity(game, report) {
   const c = game.calamity;
   if (!c) return;
   const spec = calamitySpec(c), law = calamityLaw(game);
-  if (law && allocateDuty(game, law).shortfall === 0) {
+  if (law && allocateDuty(game, law).shortfall <= 1e-9) {
     c.progress++;
     const ended = c.progress >= calamityTerms(game).goal;
-    logEvent(report, spec.duty + (ended ? " has brought the calamity to an end. Its roll remains in force." : " has served its first full week of relief."), "regionalRelief");
+    logEvent(report, ended ? `The calamity in the ${c.region} is over. The ${dutyNameInSentence(spec.duty)} stays on the roll.` : `A full week of relief in the ${c.region}, under the ${dutyNameInSentence(spec.duty)}. One more will see the calamity through.`, "regionalRelief");
     if (ended) finishCalamity(game);
     return;
   }
   const local = game.people.filter(p => p.region === c.region), preferred = local.filter(p => p.type === spec.victim);
   for (const p of local) addSuperstition(p, 1);
   if (c.emergencyWeek === game.week) {
-    logEvent(report, spec.duty + ": hired relief carries this week. The standing service is still wanting; local households gain 1 superstition.", "regionalRelief");
+    logEvent(report, `${spec.title}: hired relief carries this week, but no standing service supplies it. Local households gain 1 superstition.`, "regionalRelief");
     return;
   }
   spendStanding(game, 1);
@@ -35407,49 +35952,93 @@ function CalamityDecision({game,onRule}) {
   const progress = forecast.calamity?.progress ?? goal;
   const local = ruled.people.filter(p => p.region === c.region);
   const later = new Map(forecast.people.map(p => [p.id,p]));
-  const rows = [{who:"Fully supplied weeks",bar:{kind:"work",from:c.progress,to:progress,total:goal,label:progress+" / "+goal}}];
-  if (ruled.standing !== forecast.standing || ruled.reserve !== forecast.reserve) rows.push(calamityStandingRow(ruled,forecast));
+  // what the weekly close would bring, each line marked as a cost and named by its icon
+  const rows = [];
+  if (ruled.standing !== forecast.standing || ruled.reserve !== forecast.reserve) rows.push({...calamityStandingRow(ruled,forecast), tone:"down"});
   for (const p of local) {
     const next = later.get(p.id);
-    if (next.pressure !== p.pressure) rows.push({who:householdName(p)+" · Pressure",icon:RECKONING_ESTATE_ICON[p.type],pressure:{from:p.pressure,to:next.pressure}});
+    if (next.pressure !== p.pressure) rows.push({who:householdName(p)+" · Pressure", tone:"down", icon:RECKONING_ESTATE_ICON[p.type], pressure:{from:p.pressure,to:next.pressure}});
   }
-  rows.push(...calamityFaithRows(local.map(p => ({name:householdName(p),from:superstitionOf(p),to:superstitionOf(later.get(p.id))}))));
-  const note = text => jsx("p",{class:"cal-note",children:text});
-  const heading = text => jsx("h3",{children:text});
-  const arrival = c.since === game.week && c.arrivalFaith;
+  rows.push(...calamityFaithRows(local.map(p => ({name:householdName(p),from:superstitionOf(p),to:superstitionOf(later.get(p.id))}))).map(r => ({...r, tone:"down", icon:"flame"})));
+  const note = (text, cls) => jsx("p",{class:"cal-note" + (cls ? " " + cls : ""),children:text});
+  const arrival = c.since === game.week ? (c.arrivalFaith || []) : null;
+  const stirred = arrival ? arrival.filter(x => x.to !== x.from).length : 0;
+  const pips = (done, next) => jsx("span",{class:"cal-pips",role:"img","aria-label":`${done} of ${goal} weeks of relief`,
+    children:Array.from({length:goal},(_,i)=>jsx("span",{class:"cal-pip" + (i < done ? " done" : i < next ? " next" : "")}))});
+  const kinds = ["Standing duty","Hire relief","Leave it to the households"];
+  // the duty as it would be founded: an estate that governs is loosed from it, and an estate with no
+  // household in the region has no one to bear it
+  const charter = existing ? null : calamityLaw(ruleCalamity(game, 0)),
+    bearers = charter ? [...new Set(payersOf(game, charter).map(p => p.type))] : [],
+    missing = spec.types.filter(t => !bearers.includes(t)).map(t =>
+      game.government?.form === t ? `the ${ESTATE_PLURAL[t]} are loosed from it while they govern` : `no ${ESTATE_PLURAL[t]} live in the ${c.region}`);
+  const sub = i => i === 0
+    ? (existing ? "Keep the standing service on the roll"
+      : bearers.length ? `A new duty of 2 units a week, borne by ${listWithAnd(bearers.map(t => theEstateIn(c.region, t)))}${missing.length ? ` (${missing.join("; ")})` : ""}`
+      : `A new duty of 2 units a week, but no one would bear it: ${missing.join("; ")}`)
+    : i === 1 ? `${terms.cost} standing · spares the court and the households this week’s losses; superstition still rises, and it does not count toward relief`
+    : "Each week without relief costs 1 standing, puts 1 pressure on a stricken household, and raises local superstition";
+  const outcome = !forecast.calamity ? "The calamity ends" : progress > c.progress ? "A week of relief" : "No relief this week";
   return jsx("div",{class:"overlay session cal-screen",role:"dialog","aria-modal":"true","aria-label":v.title,
     children:jsx("div",{class:"overlay-inner",children:jsx("article",{class:"cal-sheet",children:[
-      jsx("small",{children:c.region+" · Week "+game.week}),jsx("h2",{children:v.title}),
-      jsx("p",{class:"cal-report",children:spec.appeal}),
-      terms.protectedByWork && jsx("div",{class:"cal-note",children:[jsx(WorkIcon,{work:c.region+"|"+spec.work})," ",spec.shelter]}),
-      c.since === game.week && jsx("details",{open:true,children:[
-        jsx("summary",{children:"Word reaches the households · Superstition"}),
-        arrival ? (calamityFaithRows(arrival).length ? jsx(EffectRows,{rows:calamityFaithRows(arrival)}) : note("All local households were already at their highest level.")) : note("The news raised local superstition by one step, up to its limit.")
+      jsx("small",{class:"cal-where",children:c.region+" · "+(c.since === game.week ? "Week "+game.week : `Week ${game.week} · since week ${c.since}`)}),
+      jsx("h2",{class:"cal-title",children:titleCase(v.title)}),
+      jsx(AssistantHead,{}),
+      jsx("p",{class:"hall-lede cal-report",role:"note","aria-label":"Your assistant’s account",children:`“${spec.appeal}”`}),
+      terms.protectedByWork && jsx("div",{class:"cal-note cal-shelter",children:[jsx(WorkIcon,{work:c.region+"|"+spec.work})," ",spec.shelter]}),
+      jsx("div",{class:"cal-status",children:[
+        jsx("span",{class:"cal-status-label",children:"Weeks of relief"}),
+        pips(c.progress, c.progress),
+        jsx("span",{class:"cal-status-num",children:`${c.progress} of ${goal} · `+(goal === 1 ? "one full week ends it" : "two full weeks end it")}),
       ]}),
-      heading("Your order"),
-      jsx("div",{class:"cal-options",children:v.options.map((o,i)=>jsx("button",{type:"button","aria-pressed":choice===i,disabled:!!o.disabled,onClick:()=>select(i),
-        children:[["Standing duty","Hire relief","Leave to households"][i],i===1 && jsx("small",{children:terms.cost+" standing"+(o.disabled?" · Unavailable":"")})]},i))}),
+      arrival && jsx("details",{class:"cal-word",children:[
+        jsx("summary",{children: stirred ? `Word spreads: ${stirred} ${stirred === 1 ? "household grows" : "households grow"} more superstitious` : "Word spreads, but every household here was already as superstitious as it could be"}),
+        stirred > 0 && jsx(EffectRows,{rows:calamityFaithRows(arrival).map(r => ({...r, tone:"down", icon:"flame"}))}),
+      ]}),
+      jsx("h3",{children:"Your order"}),
+      jsx("div",{class:"cal-options",role:"radiogroup","aria-label":"Your order",children:v.options.map((o,i)=>jsx("button",{type:"button",role:"radio","aria-checked":choice===i,"aria-pressed":choice===i,disabled:!!o.disabled,onClick:()=>select(i),children:[
+        jsx("span",{class:"cal-opt-kind",children:kinds[i]+(i===1 && o.disabled ? " · not enough standing" : "")}),
+        jsx("span",{class:"cal-opt-label",children:o.label}),
+        jsx("span",{class:"cal-opt-sub",children:sub(i)}),
+      ]},i))}),
       jsx("section",{class:"cal-result","aria-live":"polite",children:[
-        heading(v.options[choice].label),
-        law && jsx("div",{children:[note((choice===0 && !existing?"New duty":"Standing duty")+" · "+law.title+" · "+unitsLabel(law.requirement)+"/week"),
+        law && jsx("div",{class:"cal-duty",children:[note((choice===0 && !existing?"New duty":"Standing duty")+" · "+law.title+" · "+unitsLabel(law.requirement)+"/week","cal-duty-head"),
           jsx(DutyPreview,{game:ruled,current:true,interactive:false,order:[],view:{petition:{lawId:law.id}}})]}),
-        choice===1 && jsx(EffectRows,{rows:[calamityStandingRow(game,ruled)]}),
-        choice===2 && note(spec.harm),
-        heading("At the weekly close · current roll"),jsx(EffectRows,{rows}),
-        note(forecast.calamity ? (choice===1?"Hired relief lasts this week. ":"")+"The messenger returns next week." : "Relief complete. The duty stays on the roll."),
-        law && jsx("details",{children:[jsx("summary",{children:"If the roll changes"}),note("A full week counts toward relief. A shortage raises local superstition. "+(choice===1?"Hired relief covers the other losses this week.":"A shortage also costs one standing and puts pressure on one household.")+" The duty continues after relief.")]})
+        choice===1 && jsx(EffectRows,{rows:[{...calamityStandingRow(game,ruled), tone:"down"}]}),
+        choice===2 && note(spec.harm, "cal-harm"),
+        jsx("h3",{children:"At this week’s close"}),
+        jsx("div",{class:"cal-status cal-status-small",children:[pips(c.progress, progress),jsx("span",{class:"cal-status-num",children:outcome})]}),
+        rows.length > 0 && jsx(EffectRows,{rows}),
+        note(forecast.calamity ? (choice===1 ? "Hired relief carries this week. " : "")+"The messenger returns next week." : "Relief complete. The duty stays on the roll."),
+        law && choice !== 1 && jsx("details",{children:[jsx("summary",{children:"If the roll changes before the close"}),note("A fully supplied week counts toward relief. A short one raises local superstition, costs 1 standing and puts 1 pressure on one household. The duty continues after the calamity ends.")]}),
       ]}),
-      jsx("button",{type:"button",class:"primary cal-confirm",onClick:()=>onRule(choice),children:"Issue this order"})
+      jsx("button",{type:"button",class:"primary cal-confirm",onClick:()=>onRule(choice),children:"Send the messenger back"}),
     ]})})});
 }
 function CalamityOverlay({game,onRule}) {
   const [read,setRead] = useState(false);
   if (read) return jsx(CalamityDecision,{game,onRule});
-  const c = game.calamity;
-  return jsx(AssistantScreen,{say:c.since===game.week
-    ? "Vicar, an express has come from the "+c.region+". The messenger is waiting to ride back with your orders."
-    : "Vicar, word again from the "+c.region+". They need your orders before the day’s hearings.",
-    button:"Read the dispatch",onNext:()=>setRead(true)});
+  return jsx(AssistantScreen,{say:calamityAssistantSay(game),button:"Read the dispatch",onNext:()=>setRead(true)});
+}
+// What the assistant says before the dispatch is read: on its arrival, what has happened; on the
+// messenger's return, how the relief has gone so far and what remains.
+function calamityAssistantSay(game) {
+  const c = game.calamity, spec = calamitySpec(c), law = calamityLaw(game), goal = calamityTerms(game).goal;
+  const what = spec.title.charAt(0).toLowerCase() + spec.title.slice(1);
+  if (c.since === game.week)
+    return `Vicar, an express has come from the ${c.region}: ${what}. The messenger is waiting to ride back with your orders.`;
+  const left = goal - c.progress,
+    more = left === 1 ? "one more full week will see it through" : `${mmNum(left)} more full weeks will see it through`;
+  const so = c.progress > 0
+    ? `${capWord(mmNum(c.progress))} full week${c.progress === 1 ? "" : "s"} of relief ${c.progress === 1 ? "is" : "are"} done; ${more}.`
+    : c.emergencyWeek === game.week - 1
+      ? `The relief you hired carried last week, but no standing service is in place, and ${left === 1 ? "a full week of relief is still wanting" : `${mmNum(left)} full weeks of relief are still wanting`}.`
+      : law
+        ? `The ${dutyNameInSentence(law.title)} fell short last week, so the ${c.region} is still without relief.`
+        : c.ruledWeek === game.week - 1
+          ? `Nothing was done for them last week, and the losses go on.`
+          : `Nothing has been done for them yet, and the losses go on.`;
+  return `Vicar, the messenger is back from the ${c.region}. ${so} He needs your orders before the day’s hearings.`;
 }
 const MATTER_ORDER = ["hall", "works", "office", "faith"];
 function matterWaits(game, k) {
@@ -51042,11 +51631,51 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 /* Apply to every scroll container, including dynamically created overlays.
    This does not change overflow, touch-action, or ordinary scrolling. */
 html, body, body * { overscroll-behavior-y: none !important; }
+/* The page moves up and down only. Pinch and double-tap zoom, and dragging the page sideways (and the
+   sideways rubber-band), are off; rows that scroll sideways within themselves still do. */
+html, body { overflow-x: clip; overscroll-behavior: none !important; touch-action: pan-y; }
+@supports not (overflow-x: clip) { html, body { overflow-x: hidden; } }
 
 </style>
 <style>
 .cal-screen .cal-sheet{width:min(100%,34rem);box-sizing:border-box;min-width:0;margin:auto;background:#efe4c8;color:#30271d;border:1px solid #b99d62;border-radius:.65rem;padding:clamp(.85rem,4vw,1.5rem);text-align:left;line-height:1.35}
 .cal-sheet h2{margin:.2rem 0 .6rem;font-size:1.6rem}.cal-sheet h3{margin:.85rem 0 .4rem;font-size:1.04rem}.cal-sheet p{margin:.45rem 0}.cal-sheet .cal-report{font-style:italic}.cal-sheet small,.cal-sheet summary,.cal-sheet .cal-note{font-size:.85rem}.cal-sheet summary{cursor:pointer;padding:.4rem 0}.cal-sheet .cal-options{display:flex;gap:.35rem}.cal-options button{flex:1;min-width:0;min-height:44px;padding:.35rem .18rem;border:1px solid #9c895f;border-radius:.4rem;background:#e3d6b6;color:#30271d;font:inherit;font-size:.85rem}.cal-options button[aria-pressed=true]{background:#264136;color:#fff5d8}.cal-options button:disabled{opacity:.65}.cal-options small{display:block;font-size:.7rem}.cal-result{margin:.65rem 0;padding:.15rem .65rem .6rem;border-block:1px solid #bbaa81}.cal-sheet .fx-row{min-width:0}.cal-sheet .fx-text{min-width:0;overflow-wrap:anywhere}.cal-sheet .fx-meters,.cal-sheet .fx-faith{flex-wrap:wrap}.cal-sheet .cal-confirm{width:100%;min-height:44px}.cal-sheet .duty-allocation{max-width:100%;box-sizing:border-box}
+
+.cal-sheet .cal-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:.6rem 0 .2rem;padding:.5rem 0;border-top:1px solid #c9b07a;font-size:.88rem}
+.cal-sheet .cal-status-label{font-weight:600}
+.cal-sheet .cal-status-num{color:#5a4a33}
+.cal-sheet .cal-status-small{border-top:0;margin:.1rem 0;padding:.2rem 0}
+.cal-sheet .cal-pips{display:inline-flex;gap:5px}
+.cal-sheet .cal-pip{width:22px;height:10px;border-radius:2px;border:1px solid #8c7546;background:#f3ebd4}
+.cal-sheet .cal-pip.done{background:#3c6b4f;border-color:#2b4f3a}
+.cal-sheet .cal-pip.next{background:repeating-linear-gradient(45deg,#3c6b4f 0 3px,#cfe0c9 3px 6px);border-color:#2b4f3a}
+.cal-sheet .cal-word{border-top:1px solid #c9b07a;font-size:.88rem}
+.cal-sheet .cal-word summary{color:#5a4a33}
+.cal-sheet .cal-shelter{display:flex;gap:6px;align-items:flex-start;padding:.45rem .6rem;background:#e3d3a8;border-radius:.35rem}
+.cal-sheet .cal-options{flex-direction:column;gap:.45rem}
+.cal-sheet .cal-options button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:.55rem .75rem;border-left-width:4px;font-size:.95rem}
+.cal-sheet .cal-options button[aria-pressed=true]{background:#264136;color:#fff5d8;border-color:#16281f}
+.cal-sheet .cal-opt-kind{font-size:.68rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;opacity:.8}
+.cal-sheet .cal-opt-label{font-weight:600}
+.cal-sheet .cal-opt-sub{font-size:.8rem;opacity:.85}
+.cal-sheet .cal-duty-head{font-weight:600}
+.cal-sheet .cal-harm{font-style:italic}
+
+.cal-sheet .cal-where{display:block;text-align:center}
+.cal-sheet h2.cal-title{font:400 34px/0.98 "Royal Textura",serif;color:#1f140d;margin:6px 0 12px;letter-spacing:.01em;text-align:center;text-wrap:balance}
+.cal-sheet .assistant-head{margin:4px 0 7px;color:var(--ink-soft)}
+.cal-sheet .assistant-head+.hall-lede.cal-report{margin-top:0;font-style:italic}
+/* Button text is balanced across its lines, so that no word is ever left alone on the last one. */
+button,.primary,[role=button]{text-wrap:balance}
+
+.petition-card .pc-succour{margin:10px 0 6px}
+.petition-card .pc-succour-chip{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 6px;max-width:100%;box-sizing:border-box;padding:4px 8px 4px 7px;background:var(--vellum-shade);border-radius:var(--r-sm)}
+.petition-card .pc-succour-ico{display:inline-flex;color:var(--ink-soft)}
+.petition-card .pc-succour-name{font:var(--t-sm)/1.2 var(--serif);color:var(--ink)}
+.petition-card .pc-succour .pips{gap:2px}
+.petition-card .pc-succour .pip{width:8px;height:8px;border-width:1.2px}
+.petition-card .pc-succour .pip.gap{margin-left:5px}
+.petition-card .pc-succour .reck-pips.level-2{color:var(--wax)}
 </style></head>
   <body><div id="vr-startup" style="position:fixed;inset:0;z-index:2147483647;background:#1b2a22;color:#ead6a5;display:grid;place-content:center;text-align:center;padding:24px;font-family:Georgia,serif"><h1 style="font-size:30px">Vicarius Regis</h1><p>Preparing the court…</p><details hidden><summary>Startup recovery</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre><button onclick="location.reload()">Retry</button> <button onclick="vrRepair()">Repair app cache</button></details><small>2026.11.21-r16 · Game 20</small></div><script>vrBootWatch()</script>
     <div id="app"><div role="status" style="padding:22vh 1em;text-align:center;color:#543a26;font:22px Georgia,serif">Preparing the court…</div></div>
