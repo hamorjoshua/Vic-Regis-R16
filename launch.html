@@ -8169,18 +8169,24 @@ function runWeek(game, n, e = n.length >= 3, t = !0, r = !1) {
         ));
     }
     const region = trial.people[personId2].region,
-      R = trial.government?.form === "Official";
+      R = trial.government?.form === "Official",
+      // Paperwork is taken out of what the hearing gives: a household heard on its own petition is never
+      // left worse off for it than it came. One set aside or granted the court's remedy pays it in full.
+      paper = !R || B.petition.kind === "writ"
+        ? 0
+        : j
+          ? CONFIG.paperwork
+          : Math.max(0, Math.min(CONFIG.paperwork, (trial2.pressure || 0) - (trial.people[personId2].pressure || 0)));
     if (
-      (R &&
-        B.petition.kind !== "writ" &&
-        (addPressure(trial.people[personId2], CONFIG.paperwork),
+      (paper > 0 &&
+        (addPressure(trial.people[personId2], paper),
         logEvent(
           B,
-          `${trial.people[personId2].name}: +${CONFIG.paperwork} pressure (paperwork).`,
+          `${trial.people[personId2].name}: +${fmtNum(paper)} pressure (paperwork).`,
           "paperwork",
           [personId2],
           {
-            amount: CONFIG.paperwork,
+            amount: paper,
           },
         )),
       trial.people[personId2].writs.length > trial2.writs.length &&
@@ -13659,7 +13665,7 @@ const govFormWithArticle = (A) => `${GOV_FORM[A] === "aristocracy" ? "an" : "a"}
   GOV_DECREES = {
     Noble: "The nobles are loosed from every duty, and every other estate shall keep the nobles’ days.",
     Merchant: "The merchants are loosed from every duty.",
-    Official: `Every hearing but a writ costs its petitioner ${CONFIG.paperwork} pressure in paperwork, and every writ sealed eases the officials of its region.`,
+    Official: `Every hearing but a writ costs its petitioner ${CONFIG.paperwork} pressure in paperwork, out of the relief the hearing gives, and every writ sealed eases the officials of its region.`,
     Cleric:
       "The clergy are loosed from every duty, and every other estate shall contribute to the relief houses, the parish schools and the poor.",
     Soldier:
@@ -30795,7 +30801,7 @@ function customsText() {
       heading: "Governments",
       paragraphs: [
         `No estate petitions to govern. When a constituency’s grievance reaches ${breach} and no government stands, its estate seizes the government at the close: commoners establish a commonwealth, nobles an aristocracy, merchants a plutocracy, officials a bureaucracy, clerics a theocracy, soldiers a stratocracy. While it rules, its own constituencies do not breach; at ${breach} they bring the government down.`,
-        "Each government tilts the realm toward one estate: the ruling estate is released from duties, or others are required to carry more, or, under a bureaucracy, every hearing but a writ costs paperwork. Under a commonwealth every duty falls on the whole region and no one rises.",
+        "Each government tilts the realm toward one estate: the ruling estate is released from duties, or others are required to carry more, or, under a bureaucracy, every hearing but a writ costs paperwork, taken out of the relief the hearing gives. Under a commonwealth every duty falls on the whole region and no one rises.",
         `After ${C.govMinWeeks} weeks, a household the government does not favour may petition to overthrow it, if its constituency’s grievance stands at ${C.overthrowGrievance} or more or it is itself urgent. Sealing that restores every duty to the estates it bound before, except where a later ruling has since changed it on its own grounds.`,
       ],
     },
