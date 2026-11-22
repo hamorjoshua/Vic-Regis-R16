@@ -27889,6 +27889,16 @@ const CORE_FLIP = {
   loyalty: "callloyalty",
   defend: "amends",
   stint: "refusestint",
+  // the duty petitions, where their own reverse (a lighter share for a wider roll, or the reverse)
+  // cannot be had: the court holds to things as they stand, and spares whoever would have paid
+  aid: "holdroll",
+  extend: "holdroll",
+  retarget: "holdroll",
+  writ: "holdshare",
+  negotiate: "holdshare",
+  impose: "foundnone",
+  bridge: "foundnone",
+  shift: "keepstation",
 };
 // A grievance is held by the commoners of a region, and by each other estate across the realm.
 const estKeyIn = (region, estate) => (estate === "Commoner" ? `${region}|Commoner` : `Realm|${estate}`);
@@ -27907,6 +27917,34 @@ const policyEstate = (c) => (c.pet.policy && c.game.policies?.[c.pet.policy] ? p
 const realmKeysOf = (c, estate) => [...new Set(c.game.people.filter((p) => p.type === estate).map(constituencyOf))];
 // Only an estate with grievance to lose can be relieved of it.
 const aggrieved = (c, keys) => keys.filter((k) => (c.game.grievance?.[k] || 0) > 1e-9);
+// Sparing an estate: it loses 1 grievance, or, having none, its most pressed house in the region is
+// eased by 1 (as when the court forbids a match).
+function spareClause(c, region, estate) {
+  if (!region || !estate) return null;
+  const k = estKeyIn(region, estate);
+  if ((c.game.grievance?.[k] || 0) > 1e-9) return cl("absolve", k, 1, { primary: true });
+  const h = c.game.people
+    .filter((p) => p.id !== c.id && p.region === region && p.type === estate && !p.charge && (p.pressure || 0) > 0)
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+  return h ? cl("ease", h, 1, { primary: true }) : null;
+}
+// For a call on the order: the fellows of the estate in the other regions, spared the half share.
+function spareFellows(c) {
+  const h = c.game.people
+    .filter((p) => p.type === c.person.type && p.region !== c.person.region && !p.charge && (p.pressure || 0) > 0 && !c.law?.order?.ids?.includes(p.id))
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+  return h ? cl("ease", h, 1, { primary: true }) : null;
+}
+const holdRollClause = (c) => (c.pet.order ? spareFellows(c) : c.law ? spareClause(c, c.law.region, c.pet.targetType) : null);
+const proposalRegion = (c) => c.pet.dest || c.pet.proposal?.key?.split("|")[0] || c.region;
+const foundSpared = (c) => (c.pet.proposal?.types || []).map((t) => spareClause(c, proposalRegion(c), t)).filter(Boolean);
+// The others on a duty's roll, spared the share the household would have shed.
+function holdShareClauses(c) {
+  const keys = aggrieved(c, rollKeysBut(c, constituencyOf(c.person)));
+  if (keys.length) return [cl("absolve", keys, 1, { primary: true })];
+  const h = c.law ? payersOf(c.game, c.law).filter((p) => p.id !== c.id && !p.charge && (p.pressure || 0) > 0).sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0] : null;
+  return h ? [cl("ease", h, 1, { primary: true })] : [];
+}
 Object.assign(REVERSE_SPEC, {
   refusestanding: {
     word: "Refusal",
@@ -28008,6 +28046,46 @@ Object.assign(REVERSE_SPEC, {
     ok: (c) => !!c.person.charge,
     apply() {},
   },
+  holdroll: {
+    word: "Roll held",
+    desc: "the court’s contrary answer to a call to widen a duty",
+    want: (c) => (c.pet.order ? `wants ${c.P.pos} fellows of the other regions to share ${c.duty}` : `wants ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "another estate"} put on ${c.duty}`),
+    instead: (c) => `keep the roll of ${c.duty} as it stands, and spare ${c.pet.order ? `${c.P.pos} fellows of the other regions` : c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "the other estate"}`,
+    decree: () => "",
+    brief: "The reverse of a call to widen a duty. The roll stands as it is: the estate that would have been put on it loses 1 grievance, or, having none, its most pressed house in the region is eased by 1. Where the household called on its fellows in the other regions, the most pressed of them is eased by 1.",
+    ok: (c) => !!c.law && !!holdRollClause(c),
+    apply() {},
+  },
+  holdshare: {
+    word: "Share held",
+    desc: "the court’s contrary answer to a plea for lighter or recorded terms",
+    want: (c) => `wants ${c.P.pos} terms under ${c.duty} eased`,
+    instead: (c) => `hold ${c.P.obj} to ${c.P.pos} full share, to the relief of the others on ${c.duty}`,
+    decree: () => "",
+    brief: "The reverse of a plea for lighter or recorded terms under a duty. The household keeps its full share: the other estates on the roll each lose 1 grievance, or, where none has any, the most pressed other house on the roll is eased by 1.",
+    ok: (c) => !!c.law && holdShareClauses(c).length > 0,
+    apply() {},
+  },
+  foundnone: {
+    word: "No founding",
+    desc: "the court’s contrary answer to a call to found a duty",
+    want: (c) => `wants ${dutyNameInSentence(c.pet.proposal?.title || "a new duty")} founded`,
+    instead: (c) => `found nothing, and spare ${listWithAnd((c.pet.proposal?.types || []).map((t) => theEstateIn(proposalRegion(c), t)))}`,
+    decree: () => "",
+    brief: "The reverse of a call to found a duty. No duty is founded: each estate that would have borne it loses 1 grievance, or, having none, its most pressed house in the region is eased by 1.",
+    ok: (c) => foundSpared(c).length > 0,
+    apply() {},
+  },
+  keepstation: {
+    word: "Station kept",
+    desc: "the court’s contrary answer to a change of estate",
+    want: (c) => `wants to be recognized among ${c.pet.to ? ESTATE_PLURAL[c.pet.to] : "another estate"}`,
+    instead: (c) => `keep ${c.P.obj} in ${c.P.pos} station, and spare ${c.pet.to ? theEstateIn(c.region, c.pet.to) : "the other estate"} a newcomer`,
+    decree: () => "",
+    brief: "The reverse of a change of estate. The household stays where it is: the estate it would have joined loses 1 grievance, or, having none, its most pressed house in the region is eased by 1.",
+    ok: (c) => !!spareClause(c, c.region, c.pet.to),
+    apply() {},
+  },
   refusestint: {
     word: "No stint",
     desc: "the court’s contrary answer to a stint",
@@ -28031,6 +28109,10 @@ Object.assign(ESTATE_TITLES, {
   callloyalty: "Call on Their Loyalty",
   amends: "Settle by Amends",
   refusestint: "Refuse the Stint",
+  holdroll: "Hold the Roll",
+  holdshare: "Hold Them to Their Share",
+  foundnone: "Found No Duty",
+  keepstation: "Keep Them in Their Station",
 });
 for (const k of Object.values(CORE_FLIP)) ESTATE_KEYWORDS[k] = [REVERSE_SPEC[k].word, "", REVERSE_SPEC[k].desc];
 Object.assign(CLAUSE_SPEC, {
@@ -28065,6 +28147,10 @@ Object.assign(CLAUSE_SPEC, {
       ...(accuser && accuser.id !== c.id ? [cl("favour", accuser, 1)] : []),
     ];
   },
+  holdroll: (c) => [holdRollClause(c)],
+  holdshare: (c) => holdShareClauses(c),
+  foundnone: (c) => foundSpared(c),
+  keepstation: (c) => [spareClause(c, c.region, c.pet.to)],
   refusestint: (c) => {
     const h = c.game.people
       .filter((p) => p.region === c.region && p.type === "Commoner" && !p.charge && (p.pressure || 0) > 0)
@@ -28088,7 +28174,7 @@ function coreLast(game, personId) {
     kind,
     title: ESTATE_TITLES[kind],
     flipOf: front.kind,
-    ...Object.fromEntries(["lawId", "policy", "target", "targetType"].filter((f) => front[f] !== void 0).map((f) => [f, front[f]])),
+    ...Object.fromEntries(["lawId", "policy", "target", "targetType", "proposal", "dest", "to", "order"].filter((f) => front[f] !== void 0).map((f) => [f, front[f]])),
   };
   if (!opposeOk(game, personId, rev)) return null;
   return (kind === "amends" ? PetitionPriority.valid(game, personId, rev) : audiencePetitionValid(game, personId, rev)) ? rev : null;
