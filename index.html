@@ -10540,7 +10540,7 @@ function flipAlternativeBase0(game, personId) {
   } catch (e) {
     front = null;
   }
-  for (const f of [flipAlternativeOrdinary, shortfallReverse, respiteReverse, lastReverse, opposeLast, foundLast]) {
+  for (const f of [flipAlternativeOrdinary, shortfallReverse, respiteReverse, lastReverse, opposeLast, foundLast, coreLast]) {
     const pet = f(game, personId);
     if (pet && !sameRemedy(pet, front)) return pet;
   }
@@ -15365,6 +15365,8 @@ const epOldValid = PetitionPriority.valid.bind(PetitionPriority);
 PetitionPriority.valid = (game, personId, pet) =>
   pet?.kind === "staypolicy"
     ? pet.flipOf === "policy" && opposeOk(game, personId, pet)
+    : isCoreReverse(pet)
+    ? opposeOk(game, personId, pet)
     : pet?.kind === "keepwatch" && pet.flipOf === "shift"
     ? game.people[personId].type === "Commoner" && epOldValid(game, personId, { kind: "shift", to: "Soldier" })
     : pet?.kind === "succour"
@@ -27298,7 +27300,7 @@ const REVERSE_SPEC = {
   },
 };
 for (const [k, s] of Object.entries(REVERSE_SPEC)) ESTATE_KEYWORDS[k] = [s.word, "", s.desc];
-const isOpposeReverse = (pet) => !!(pet && REVERSE_SPEC[pet.kind] && pet.flipOf && OPPOSE_FLIP[pet.flipOf] === pet.kind);
+const isOpposeReverse = (pet) => !!(pet && REVERSE_SPEC[pet.kind] && pet.flipOf && (OPPOSE_FLIP[pet.flipOf] === pet.kind || CORE_FLIP[pet.flipOf] === pet.kind));
 function opposeOk(game, personId, pet) {
   try {
     return !!REVERSE_SPEC[pet.kind].ok(opposeCtx(game, personId, pet));
@@ -27869,6 +27871,228 @@ Object.assign(CLAUSE_SPEC, {
   nosin: (c) => [cl("chasten", laityOf(c.game, c.region), 1, { label: c.of(c.region, "laity"), group: true, primary: true }), cl("absolve", c.region + "|Commoner", 1)],
 });
 for (const k of Object.keys(CLAUSE_SPEC)) CLAUSE_KINDS.add(k);
+
+// ---------- The court's contrary answer to the common petitions ----------
+// The petitions that are not an estate's own (standing, compacts, shares, measures, government,
+// a loyal household, an accused one) had no reverse of their own. Each now carries the court's
+// contrary answer, offered only where nothing else has been set on the card (see coreLast). They
+// are written as the estate petitions' contrary answers are: words, a keyword and verbs.
+const CORE_FLIP = {
+  compact: "refusestanding",
+  pact: "forbidleague",
+  equalize: "keepshares",
+  resume: "keeplight",
+  recall: "livingroll",
+  repeal: "confirmmeasure",
+  overthrow: "upholdrule",
+  prepare: "sparestate",
+  loyalty: "callloyalty",
+  defend: "amends",
+  stint: "refusestint",
+};
+// A grievance is held by the commoners of a region, and by each other estate across the realm.
+const estKeyIn = (region, estate) => (estate === "Commoner" ? `${region}|Commoner` : `Realm|${estate}`);
+// The estates on a duty's roll, by their grievance, leaving out the one named.
+const rollKeysBut = (c, except) => (c.law ? [...new Set(payersOf(c.game, c.law).map(constituencyOf))].filter((k) => k !== except) : []);
+// The other estates of a region, by their grievance.
+const otherRegionKeys = (c) => regionKeys(c.game, c.region).filter((k) => k !== constituencyOf(c.person));
+// The houses carrying a lighter share of a duty.
+const lighterOn = (c) => (c.law ? c.game.people.filter((p) => isLiable(p, c.law) && dutyWeight(p, c.law) > 0 && dutyWeight(p, c.law) < 2) : []);
+// The most pressed other house of the region, where one is pressed at all.
+const mostPressedNear = (c) =>
+  c.game.people
+    .filter((p) => p.id !== c.id && p.region === c.region && !p.charge && (p.pressure || 0) > 0)
+    .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0] || null;
+const policyEstate = (c) => (c.pet.policy && c.game.policies?.[c.pet.policy] ? policyById(c.pet.policy)?.estate : null);
+const realmKeysOf = (c, estate) => [...new Set(c.game.people.filter((p) => p.type === estate).map(constituencyOf))];
+// Only an estate with grievance to lose can be relieved of it.
+const aggrieved = (c, keys) => keys.filter((k) => (c.game.grievance?.[k] || 0) > 1e-9);
+Object.assign(REVERSE_SPEC, {
+  refusestanding: {
+    word: "Refusal",
+    desc: "the court’s contrary answer to a plea for legal status",
+    want: (c) => `wants the ${compactLabel(c.person)} given standing to dispute ${c.duty}`,
+    instead: (c) => `refuse them standing, to the relief of the others on ${c.duty}`,
+    decree: () => "",
+    brief: "The reverse of a plea for legal status. The estate is refused standing: the other estates on the duty lose 1 grievance, and the asking estate gains 1.",
+    ok: (c) => aggrieved(c, rollKeysBut(c, constituencyOf(c.person))).length > 0,
+    apply() {},
+  },
+  forbidleague: {
+    word: "No league",
+    desc: "the court’s contrary answer to a Compact",
+    want: (c) => `wants the ${compactLabel(c.person)} to form a Compact`,
+    instead: () => "forbid the league, to the relief of the region’s other estates",
+    decree: () => "",
+    brief: "The reverse of a Compact. The league is forbidden: the other estates of the region, who feared it, each lose 1 grievance.",
+    ok: (c) => aggrieved(c, otherRegionKeys(c)).length > 0,
+    apply() {},
+  },
+  keepshares: {
+    word: "Shares kept",
+    desc: "the court’s contrary answer to a call for equal shares",
+    want: (c) => `wants everyone on ${c.duty} to carry alike again`,
+    instead: () => "let the lighter shares stand",
+    decree: () => "",
+    brief: "The reverse of a call for equal shares. The lighter shares stand: each house that holds one gains 1 regard, and its estate loses 1 grievance.",
+    ok: (c) => lighterOn(c).length > 0,
+    apply() {},
+  },
+  keeplight: {
+    word: "Kept light",
+    desc: "the court’s contrary answer to an offer to carry a full share",
+    want: (c) => `offers to carry ${c.P.pos} full share of ${c.duty} again`,
+    instead: () => "decline the offer, and ease the household instead",
+    decree: () => "",
+    brief: "The reverse of an offer to carry a full share again. The court declines it: the household keeps its lighter share and is eased by 1 pressure.",
+    ok: (c) => (c.person.pressure || 0) > 0,
+    apply() {},
+  },
+  livingroll: {
+    word: "Living roll",
+    desc: "the court’s contrary answer to a recall",
+    want: (c) => `wants ${c.duty} bound to the households first bound by it`,
+    instead: () => "keep the duty on its living roll",
+    decree: () => "",
+    brief: "The reverse of a recall. The duty stays on its living roll: the other estates on it, spared the quarrel, each lose 1 grievance.",
+    ok: (c) => aggrieved(c, rollKeysBut(c, constituencyOf(c.person))).length > 0,
+    apply() {},
+  },
+  confirmmeasure: {
+    word: "Confirmed",
+    desc: "the court’s contrary answer to a repeal",
+    want: (c) => `wants ${c.pet.policy ? POLICY_TEXT[c.pet.policy]?.name || c.pet.policy : "the measure"} repealed`,
+    instead: () => "confirm the measure, to the satisfaction of those it serves",
+    decree: () => "",
+    brief: "The reverse of a repeal. The measure stands: the estate it serves loses 1 grievance, and the asking estate gains 1.",
+    ok: (c) => !!policyEstate(c) && aggrieved(c, realmKeysOf(c, policyEstate(c))).length > 0,
+    apply() {},
+  },
+  upholdrule: {
+    word: "Upheld",
+    desc: "the court’s contrary answer to a call to overthrow the government",
+    want: () => "wants the government overthrown",
+    instead: () => "uphold the government",
+    decree: () => "",
+    brief: "The reverse of a call to overthrow the government. The government stands: the ruling estate loses 1 grievance, and the asking estate gains 1.",
+    ok: (c) => !!c.game.government?.form && aggrieved(c, realmKeysOf(c, c.game.government.form)).length > 0,
+    apply() {},
+  },
+  sparestate: {
+    word: "Spared",
+    desc: "the court’s contrary answer to a reserved extension",
+    want: (c) => `wants an offer kept to put ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "another estate"} on ${c.duty} later`,
+    instead: (c) => `close the dispute and spare ${c.pet.targetType ? theEstateIn(c.law?.region || c.region, c.pet.targetType) : "the other estate"}`,
+    decree: () => "",
+    brief: "The reverse of a reserved extension. No offer is kept: the estate it would have named loses 1 grievance.",
+    ok: (c) => !!c.pet.targetType && !!c.law && aggrieved(c, [estKeyIn(c.law.region, c.pet.targetType)]).length > 0,
+    apply() {},
+  },
+  callloyalty: {
+    word: "Service",
+    desc: "the court’s contrary answer to an assurance of loyalty",
+    want: () => "wants only to assure the Crown of its loyalty",
+    instead: (c) => `take ${c.P.obj} at ${c.P.pos} word, and have ${c.P.obj} bear part of a pressed neighbour’s burden`,
+    decree: () => "",
+    brief: "The reverse of an assurance of loyalty. The court takes the household at its word: the most pressed other house of its region is eased by 1, and the loyal house takes 1 pressure.",
+    ok: (c) => !!mostPressedNear(c),
+    apply() {},
+  },
+  amends: {
+    word: "Amends",
+    desc: "the court’s contrary answer to the accused’s denial",
+    want: () => "denies the charge and asks you to dismiss it",
+    instead: () => "settle the charge by amends, to the satisfaction of the accuser",
+    decree: () => "",
+    brief: "The reverse of the accused’s denial. The charge is cleared, but by amends, not dismissal: the accused takes 1 pressure, and the accuser gains 1 regard.",
+    ok: (c) => !!c.person.charge,
+    apply() {},
+  },
+  refusestint: {
+    word: "No stint",
+    desc: "the court’s contrary answer to a stint",
+    want: (c) => `wants the commoners of the ${c.region} to share their pressure among themselves`,
+    instead: () => "refuse the stint, and ease the most pressed of them",
+    decree: () => "",
+    brief: "The reverse of a stint. The commoners are not pooled; instead the most pressed commoner household of the region is eased by 1.",
+    ok: (c) => c.game.people.some((p) => p.region === c.region && p.type === "Commoner" && !p.charge && (p.pressure || 0) > 0),
+    apply() {},
+  },
+});
+Object.assign(ESTATE_TITLES, {
+  refusestanding: "Refuse Them Standing",
+  forbidleague: "Forbid the League",
+  keepshares: "Let the Lighter Shares Stand",
+  keeplight: "Keep Them Light",
+  livingroll: "Keep the Living Roll",
+  confirmmeasure: "Confirm the Measure",
+  upholdrule: "Uphold the Government",
+  sparestate: "Spare the Other Estate",
+  callloyalty: "Call on Their Loyalty",
+  amends: "Settle by Amends",
+  refusestint: "Refuse the Stint",
+});
+for (const k of Object.values(CORE_FLIP)) ESTATE_KEYWORDS[k] = [REVERSE_SPEC[k].word, "", REVERSE_SPEC[k].desc];
+Object.assign(CLAUSE_SPEC, {
+  refusestanding: (c) => {
+    const own = constituencyOf(c.person);
+    return [cl("absolve", aggrieved(c, rollKeysBut(c, own)), 1, { primary: true }), cl("aggrieve", own, 1)];
+  },
+  forbidleague: (c) => [cl("absolve", aggrieved(c, otherRegionKeys(c)), 1, { primary: true })],
+  keepshares: (c) => {
+    const light = lighterOn(c);
+    return [cl("favour", light, 1, { primary: true }), cl("absolve", aggrieved(c, [...new Set(light.map(constituencyOf))]), 1)];
+  },
+  keeplight: (c) => [cl("ease", c.person, 1, { primary: true })],
+  livingroll: (c) => [cl("absolve", aggrieved(c, rollKeysBut(c, constituencyOf(c.person))), 1, { primary: true })],
+  confirmmeasure: (c) => {
+    const keys = aggrieved(c, realmKeysOf(c, policyEstate(c))),
+      own = constituencyOf(c.person);
+    return [cl("absolve", keys, 1, { primary: true }), ...(c.person.type === policyEstate(c) ? [] : [cl("aggrieve", own, 1)])];
+  },
+  upholdrule: (c) => {
+    const keys = aggrieved(c, realmKeysOf(c, c.game.government.form)),
+      own = constituencyOf(c.person);
+    return [cl("absolve", keys, 1, { primary: true }), ...(c.person.type === c.game.government.form ? [] : [cl("aggrieve", own, 1)])];
+  },
+  sparestate: (c) => [cl("absolve", estKeyIn(c.law.region, c.pet.targetType), 1, { primary: true })],
+  callloyalty: (c) => [cl("ease", mostPressedNear(c), 1, { primary: true }), cl("press", c.person, 1)],
+  amends: (c) => {
+    const accuser = c.person.charge?.by != null ? c.game.people[c.person.charge.by] : null;
+    return [
+      { ...rider("Amends", "The charge is cleared by amends: the accused is not vindicated, and the accuser is satisfied.", `The charge against ${c.N} is cleared by amends`, (game) => (game.people[c.id].charge = null)), primary: true },
+      cl("press", c.person, 1),
+      ...(accuser && accuser.id !== c.id ? [cl("favour", accuser, 1)] : []),
+    ];
+  },
+  refusestint: (c) => {
+    const h = c.game.people
+      .filter((p) => p.region === c.region && p.type === "Commoner" && !p.charge && (p.pressure || 0) > 0)
+      .sort((a, b) => (b.pressure || 0) - (a.pressure || 0) || a.id - b.id)[0];
+    return [cl("ease", h, 1, { primary: true })];
+  },
+});
+for (const k of Object.keys(CLAUSE_SPEC)) CLAUSE_KINDS.add(k);
+const isCoreReverse = (pet) => !!(pet && pet.flipOf && CORE_FLIP[pet.flipOf] === pet.kind && REVERSE_SPEC[pet.kind]);
+// The last reverse tried: the court's contrary answer to a common petition, where the card has no
+// other. A charged household's denial may be turned too: its contrary answer is to settle by amends.
+function coreLast(game, personId) {
+  if (game.lesson) return null;
+  const person = game.people[personId];
+  if (!person || (person.regard ?? 0) <= -2 || game.audiencePlan?.[personId]?.rf) return null;
+  const g0 = game.ruleAlt === void 0 ? game : { ...game, ruleAlt: void 0 };
+  const front = currentPetition(g0, personId),
+    kind = front && CORE_FLIP[front.kind];
+  if (!kind || front.ambition || (person.charge && front.kind !== "defend")) return null;
+  const rev = {
+    kind,
+    title: ESTATE_TITLES[kind],
+    flipOf: front.kind,
+    ...Object.fromEntries(["lawId", "policy", "target", "targetType"].filter((f) => front[f] !== void 0).map((f) => [f, front[f]])),
+  };
+  if (!opposeOk(game, personId, rev)) return null;
+  return (kind === "amends" ? PetitionPriority.valid(game, personId, rev) : audiencePetitionValid(game, personId, rev)) ? rev : null;
+}
 // The assistant's account of a ruling written in verbs: who it touches and how, in words, without
 // the numbers the keywords and the decree carry.
 function narrateClauses(game, personId, pet) {
@@ -30090,7 +30314,7 @@ function customsText() {
       heading: "Alternative petitions & flips",
       paragraphs: [
         "Only some cards have an alternative petition. When a flip is available, it offers another way to address the matter; a card without a flip must be heard as presented or left waiting. Availability depends on the petition and the household’s circumstances.",
-        "Where nothing else is set on its reverse, a petition of an estate, a household’s kindness, an officer’s petition or a petition of faith carries the court’s contrary answer: the court doing the opposite of what is asked. Succour comes first; where the court has set succour on a card, that is its reverse. What each contrary answer does is explained under its keyword on the card.",
+        "Where nothing else is set on its reverse, every petition carries the court’s contrary answer: the court doing the opposite of what is asked. This holds for a petition of an estate, a household’s kindness, an officer’s petition or a petition of faith, and for the common petitions too: a plea for legal status may be refused, a Compact forbidden, lighter shares let stand, a measure confirmed, the government upheld, a loyal household called on to help a pressed neighbour, and an accused household’s denial settled by amends. Succour comes first; where the court has set succour on a card, that is its reverse. What each contrary answer does is explained under its keyword on the card.",
         "An alternative may replace personal relief with a change to who carries a duty, or replace an accusation with restitution. Some cards begin with the structural remedy already facing upward. Read both the proposed decree and its effects: flipping does not always mean choosing the more generous remedy. A household asking to rise out of a duty that cannot spare it may be let to rise and kept on that duty by its own bond; it loses 1 regard for it.",
         `Your first flip of the week costs no standing and may be used on an eligible card whether or not it is on the docket. Hearing that household grants the side you selected. A household granted a reverse has not got what it came to ask: it gets none of a hearing’s relief, nor any relief for its place in the order, so its pressure is left as it was, and it loses 1 regard. Some reverses cost more on their own terms, as their keywords say. A household at −2 regard cannot be flipped. A card turned to another matter, the court’s rescue for an estate near breach, sets aside the petition its household came with: that household is not heard, so it gets none of a hearing’s relief, nor any relief for its place in the order, and it takes ${C.setAsidePressure} pressure besides, whatever the matter does for others. Granting the alternative also answers, in part, its own lodged petition on the same duty. Purveyance is a card of the same kind: when a duty’s shortfall would bring on a disaster, fail an endowment, ruin a work or default a syndicate, and no petition in the audience mends it, a household may be set aside to supply what is wanting, for that week alone.`,
         `A second flip in the same week, on any card that can be flipped, costs ${C.secondFlipCost} standing. It is paid from the reserve first and is refused only if it would spend the court’s last point. The standing watch makes it free.`,
